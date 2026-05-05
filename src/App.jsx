@@ -1,228 +1,79 @@
-import React, { useState, useMemo, useRef, useCallback } from 'react';
+import React, {
+  useState, useMemo, useRef, useCallback, useEffect,
+} from 'react';
 import Papa from 'papaparse';
 import {
-  ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid,
+  ComposedChart, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
+import { BACKGROUND_DATA, BG_DATE_MIN, BG_DATE_MAX } from './bgData';
+import {
+  fmtLabel, deriveGroup, pctOf, calcSimTime,
+  buildDeviceStats, mergeRows, filterRowsByDate, processCsvToAggRows,
+  GROUP_COLOR, GROUP_LIGHT, GROUP_BORDER, GROUP_TEXT, DEVICE_PALETTE,
+  ALL_DEVICE_IDS, DEFAULT_BOARD_ID, DEFAULT_BOARD, DEFAULT_SETTINGS,
+} from './utils';
 
-// ─── FALLBACK DATA (used when no CSV is loaded) ──────────────────────────────
-const FALLBACK_DATA = [
-  { id: '3CDU',   median: 6.8,  p85: 10, max: 15.2,  group: 'South' },
-  { id: '3NE',    median: 14.3, p85: 19, max: 24.0,  group: 'North' },
-  { id: '3NSCCT', median: 22.3, p85: 30, max: 141.3, group: 'SCCT'  },
-  { id: '3NW',    median: 7.9,  p85: 11, max: 16.6,  group: 'North' },
-  { id: '3SE',    median: 32.4, p85: 40, max: 42.6,  group: 'South' },
-  { id: '3SSCCT', median: 24.2, p85: 38, max: 121.2, group: 'SCCT'  },
-  { id: '3SW',    median: 31.1, p85: 39, max: 50.3,  group: 'South' },
-  { id: '4NE',    median: 26.3, p85: 32, max: 101.1, group: 'North' },
-  { id: '4NSCCT', median: 21.0, p85: 30, max: 76.2,  group: 'SCCT'  },
-  { id: '4NW',    median: 24.1, p85: 29, max: 38.6,  group: 'North' },
-  { id: '4SE',    median: 29.0, p85: 33, max: 60.0,  group: 'South' },
-  { id: '4SW',    median: 28.5, p85: 35, max: 51.7,  group: 'South' },
-  { id: '5NE',    median: 26.6, p85: 33, max: 47.2,  group: 'North' },
-  { id: '5NSCCT', median: 21.4, p85: 32, max: 73.9,  group: 'SCCT'  },
-  { id: '5NW',    median: 26.9, p85: 32, max: 37.0,  group: 'North' },
-  { id: '5SE',    median: 28.0, p85: 37, max: 43.4,  group: 'South' },
-  { id: '5SSCCT', median: 21.0, p85: 29, max: 41.0,  group: 'SCCT'  },
-  { id: '5SW',    median: 26.5, p85: 33, max: 40.1,  group: 'South' },
-  { id: '6ICU',   median: 5.2,  p85: 7,  max: 10.0,  group: 'South' },
-  { id: '6NE',    median: 23.2, p85: 31, max: 41.2,  group: 'North' },
-  { id: '6NSCCT', median: 23.9, p85: 35, max: 50.1,  group: 'SCCT'  },
-  { id: '6NW',    median: 26.5, p85: 34, max: 77.3,  group: 'North' },
-  { id: '6SE',    median: 23.7, p85: 31, max: 52.2,  group: 'South' },
-  { id: '6SSCCT', median: 28.7, p85: 42, max: 47.7,  group: 'SCCT'  },
-  { id: '6SW',    median: 21.8, p85: 28, max: 30.4,  group: 'South' },
-  { id: '7NE',    median: 27.1, p85: 32, max: 87.8,  group: 'North' },
-  { id: '7NSCCT', median: 20.5, p85: 30, max: 404.9, group: 'SCCT'  },
-  { id: '7NW',    median: 25.0, p85: 29, max: 40.9,  group: 'North' },
-  { id: '7SE',    median: 27.2, p85: 34, max: 42.6,  group: 'South' },
-  { id: '7SSCCT', median: 20.1, p85: 31, max: 367.8, group: 'SCCT'  },
-  { id: '7SW',    median: 27.8, p85: 35, max: 44.9,  group: 'South' },
-  { id: '8NE',    median: 22.4, p85: 27, max: 40.6,  group: 'North' },
-  { id: '8NSCCT', median: 18.7, p85: 28, max: 95.0,  group: 'SCCT'  },
-  { id: '8NW',    median: 19.9, p85: 26, max: 44.9,  group: 'North' },
-  { id: '8SE',    median: 21.9, p85: 27, max: 33.4,  group: 'South' },
-  { id: '8SSCCT', median: 18.0, p85: 27, max: 403.8, group: 'SCCT'  },
-  { id: '8SW',    median: 21.1, p85: 26, max: 46.1,  group: 'South' },
-];
+// ─── LOCAL STORAGE HOOK ───────────────────────────────────────────────────────
 
-const GROUP_COLORS  = { North: '#3b82f6', South: '#ef4444', SCCT: '#a855f7', Other: '#64748b' };
-const GROUP_LIGHT   = { North: '#dbeafe', South: '#fee2e2', SCCT: '#f3e8ff', Other: '#f1f5f9' };
-const GROUP_BORDER  = { North: '#93c5fd', South: '#fca5a5', SCCT: '#d8b4fe', Other: '#cbd5e1' };
-const GROUP_TEXT    = { North: '#1d4ed8', South: '#b91c1c', SCCT: '#7e22ce', Other: '#475569' };
-const DEVICE_PALETTE = [
-  '#3b82f6','#ef4444','#a855f7','#22c55e','#f59e0b',
-  '#14b8a6','#f97316','#8b5cf6','#ec4899','#06b6d4',
-];
-
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
-
-const parseSessionMinutes = (str) => {
-  if (!str) return 0;
-  const p = str.trim().split(':').map(Number);
-  if (p.length === 3) return p[0] * 60 + p[1] + p[2] / 60;
-  if (p.length === 2) return p[0] + p[1] / 60;
-  return 0;
-};
-
-const parseDateKey = (str) => {
-  if (!str) return null;
-  const d = str.trim().split(' ')[0];
-  const parts = d.split('/');
-  if (parts.length !== 3) return null;
-  const [m, day, y] = parts;
-  return `${y}-${m.padStart(2,'0')}-${day.padStart(2,'0')}`;
-};
-
-const fmtLabel = (key) => {
-  if (!key) return '';
-  const [, m, d] = key.split('-');
-  return `${parseInt(m)}/${parseInt(d)}`;
-};
-
-const deriveGroup = (id) => {
-  const u = (id || '').toUpperCase();
-  if (u.includes('SCCT')) return 'SCCT';
-  if (u.includes('ICU') || u.includes('CDU')) return 'South';
-  if (/\d(NE|NW)$/.test(u)) return 'North';
-  if (/\d(SE|SW)$/.test(u)) return 'South';
-  return 'Other';
-};
-
-const pctOf = (sorted, p) => {
-  if (!sorted.length) return 0;
-  const idx = (p / 100) * (sorted.length - 1);
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
-};
-
-const calculateTime = (unit, pct) => {
-  if (pct <= 50) return Math.round(unit.median);
-  if (pct <= 85) return Math.round(unit.median + ((pct - 50) / 35) * (unit.p85 - unit.median));
-  return Math.round(unit.p85 + ((pct - 85) / 15) * (unit.max - unit.p85));
-};
-
-const computeDeviceStats = (rows) => {
-  // Build daily session totals per device, then find median/p85/max of those totals.
-  // This gives "how long to refill this device on a typical/busy/worst day."
-  const deviceDaily = {};
-  rows.forEach(r => {
-    if (!deviceDaily[r.device]) deviceDaily[r.device] = {};
-    deviceDaily[r.device][r.dateKey] = (deviceDaily[r.device][r.dateKey] || 0) + r.sessionMinutes;
+function useLocalStorage(key, initialValue) {
+  const [state, setState] = useState(() => {
+    try {
+      const v = window.localStorage.getItem(key);
+      return v ? JSON.parse(v) : initialValue;
+    } catch { return initialValue; }
   });
-  return Object.entries(deviceDaily).map(([id, daily]) => {
-    const sorted = Object.values(daily).sort((a, b) => a - b);
-    return {
-      id,
-      median: parseFloat(pctOf(sorted, 50).toFixed(1)),
-      p85:    parseFloat(pctOf(sorted, 85).toFixed(1)),
-      max:    parseFloat(sorted[sorted.length - 1].toFixed(1)),
-      group:  deriveGroup(id),
-    };
-  });
-};
-
-const processCSVData = (papaResults) => {
-  const rows = [];
-  papaResults.data.forEach(row => {
-    if ((row['MedClass'] || '').trim() !== 'Non-CS Med') return;
-    const dateKey = parseDateKey((row['TransactionDateTime'] || '').trim());
-    if (!dateKey) return;
-    const device = (row['Device'] || '').trim();
-    if (!device) return;
-    rows.push({
-      device,
-      dateKey,
-      sessionMinutes: parseSessionMinutes((row['SessionLength'] || '').trim()),
-      isCancelled: (row['TransactionType'] || '').trim() === 'Refill CANCELLED',
+  const set = useCallback((valueOrFn) => {
+    setState(prev => {
+      const next = typeof valueOrFn === 'function' ? valueOrFn(prev) : valueOrFn;
+      try { window.localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      return next;
     });
-  });
-  return rows;
-};
+  }, [key]);
+  return [state, set];
+}
 
-// ─── ICONS ───────────────────────────────────────────────────────────────────
+// ─── ICONS ────────────────────────────────────────────────────────────────────
 
-const IconSettings = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+const Ic = ({ d, size = 16, ...rest }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size}
+    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...rest}>
+    <path d={d} />
   </svg>
 );
+const IcSettings = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||16} height={p.size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>;
+const IcChart    = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||16} height={p.size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>;
+const IcDatabase = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||16} height={p.size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>;
+const IcUpload   = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||16} height={p.size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>;
+const IcDownload = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||16} height={p.size||16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
+const IcClose    = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||20} height={p.size||20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+const IcTrash    = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||14} height={p.size||14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>;
+const IcPlus     = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||14} height={p.size||14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
+const IcCopy     = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||14} height={p.size||14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>;
+const IcEdit     = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||14} height={p.size||14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>;
+const IcCheck    = (p) => <svg xmlns="http://www.w3.org/2000/svg" width={p.size||14} height={p.size||14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>;
 
-const IconPlay = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-    <polygon points="5 3 19 12 5 21 5 3"/>
-  </svg>
-);
+// ─── CHART TOOLTIP ────────────────────────────────────────────────────────────
 
-const IconPresentation = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/>
-  </svg>
-);
-
-const IconDatabase = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>
-  </svg>
-);
-
-const IconChart = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/>
-  </svg>
-);
-
-const IconUpload = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
-  </svg>
-);
-
-const IconClose = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-  </svg>
-);
-
-const IconTrash = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-  </svg>
-);
-
-// ─── CUSTOM TOOLTIP ───────────────────────────────────────────────────────────
-
-const CustomTooltip = ({ active, payload, label, metric }) => {
-  if (!active || !payload || !payload.length) return null;
-  const unit = metric === 'volume' ? ' refills' : ' min';
+const ChartTooltip = ({ active, payload, label, metric }) => {
+  if (!active || !payload?.length) return null;
+  const unit = metric === 'volume' ? ' refills' : 'm';
+  const items = payload.filter(e => !String(e.dataKey).includes('cancel'));
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs min-w-[160px]">
-      <p className="font-bold text-slate-700 mb-2 text-sm">{label}</p>
-      {payload.map(entry => (
-        <div key={entry.dataKey} className="flex justify-between gap-4 mb-0.5">
+    <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-md text-xs min-w-[160px]">
+      <p className="font-bold text-slate-700 mb-2">{label}</p>
+      {items.map(e => (
+        <div key={e.dataKey} className="flex justify-between gap-4 mb-0.5">
           <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-sm inline-block" style={{ background: entry.fill || entry.color }} />
-            {entry.dataKey}
+            <span className="w-2 h-2 rounded-sm inline-block" style={{ background: e.fill || e.color }} />
+            {e.dataKey}
           </span>
-          <span className="font-semibold text-slate-800">
-            {typeof entry.value === 'number' ? entry.value.toFixed(metric === 'volume' ? 0 : 1) : entry.value}{unit}
+          <span className="font-semibold">
+            {typeof e.value === 'number'
+              ? (metric === 'volume' ? Math.round(e.value) : e.value.toFixed(1))
+              : e.value}{unit}
           </span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-const InterruptionTooltip = ({ active, payload, label }) => {
-  if (!active || !payload || !payload.length) return null;
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs">
-      <p className="font-bold text-slate-700 mb-1">{label}</p>
-      {payload.map(entry => (
-        <div key={entry.dataKey} className="flex justify-between gap-4">
-          <span>{entry.dataKey}</span>
-          <span className="font-semibold">{entry.value} cancellations</span>
         </div>
       ))}
     </div>
@@ -232,158 +83,227 @@ const InterruptionTooltip = ({ active, payload, label }) => {
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-  // ── Core state
-  const [activeTab, setActiveTab]       = useState('scheduler');
-  const [percentile, setPercentile]     = useState(85);
-  const [showSummary, setShowSummary]   = useState(false);
-  const [showDataModal, setShowDataModal] = useState(false);
-  const [isLoading, setIsLoading]       = useState(false);
-  const [loadError, setLoadError]       = useState('');
-  const [pasteText, setPasteText]       = useState('');
-  const [activeLoadTab, setActiveLoadTab] = useState('paste');
-  const fileInputRef = useRef(null);
 
-  // ── Data segments (each represents one loaded CSV batch)
-  const [segments, setSegments] = useState([]);
+  // ── Persistent global state ───────────────────────────────────────────────
+  const [percentile,    setPercentile]    = useLocalStorage('pyxis_pct',     85);
+  const [dateStart,     setDateStart]     = useLocalStorage('pyxis_ds',      BG_DATE_MIN);
+  const [dateEnd,       setDateEnd]       = useLocalStorage('pyxis_de',      BG_DATE_MAX);
+  const [userSegments,  setUserSegments]  = useLocalStorage('pyxis_segs',    []);
+  const [boards,        setBoards]        = useLocalStorage('pyxis_boards',  { [DEFAULT_BOARD_ID]: DEFAULT_BOARD });
+  const [activeBoardId, setActiveBoardId] = useLocalStorage('pyxis_boardId', DEFAULT_BOARD_ID);
+  const [settings,      setSettings]      = useLocalStorage('pyxis_settings',DEFAULT_SETTINGS);
+  const [viewMode,      setViewMode]      = useLocalStorage('pyxis_vm',      'group');
+  const [activeMetric,  setActiveMetric]  = useLocalStorage('pyxis_am',      'session');
+  const [chartDevices,  setChartDevices]  = useLocalStorage('pyxis_cd',      []);
 
-  // ── Analytics state
-  const [viewMode, setViewMode]             = useState('group');   // 'group' | 'device'
-  const [activeMetric, setActiveMetric]     = useState('session'); // 'session' | 'volume'
-  const [selectedDevices, setSelectedDevices] = useState(new Set());
-  const [dateStart, setDateStart] = useState('');
-  const [dateEnd, setDateEnd]     = useState('');
+  // Ensure default board exists
+  useEffect(() => {
+    setBoards(prev => prev[DEFAULT_BOARD_ID] ? prev : { [DEFAULT_BOARD_ID]: DEFAULT_BOARD, ...prev });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Scheduler state
-  const [assignments, setAssignments] = useState({
-    unassigned: [], tech1: [], tech2: [], tech3: [], tech4: [],
-  });
-  const [settings, setSettings] = useState({
-    shiftMinutes: 600, lunchMinutes: 45, cartCapacity: 4,
-    reloadPenalty: 18, travelPerUnit: 5,
-  });
-  const [draggedId, setDraggedId]       = useState(null);
-  const [sourceColumn, setSourceColumn] = useState(null);
+  // ── Ephemeral UI state ────────────────────────────────────────────────────
+  const [activeTab,        setActiveTab]        = useState('scheduler');
+  const [selectedTiles,    setSelectedTiles]    = useState(new Set());
+  const [lastAnchor,       setLastAnchor]        = useState(null);
+  const [showDataModal,    setShowDataModal]     = useState(false);
+  const [showSummary,      setShowSummary]       = useState(false);
+  const [showSession,      setShowSession]       = useState(false);
+  const [pasteText,        setPasteText]         = useState('');
+  const [activeLoadTab,    setActiveLoadTab]     = useState('paste');
+  const [loadError,        setLoadError]         = useState('');
+  const [isLoading,        setIsLoading]         = useState(false);
+  const [editingBoard,     setEditingBoard]      = useState(null); // { id, name }
+  const fileInputRef   = useRef(null);
+  const importInputRef = useRef(null);
 
-  // ── Derived: all rows from all segments
-  const allRows = useMemo(() => segments.flatMap(s => s.rows), [segments]);
+  // ── Merged + filtered data ─────────────────────────────────────────────────
+  const allRows = useMemo(() => {
+    const userRows = userSegments.flatMap(s => s.rows);
+    return mergeRows(BACKGROUND_DATA, userRows);
+  }, [userSegments]);
 
-  // ── Derived: device stats for scheduler (from CSV if loaded, else fallback)
-  const liveDeviceData = useMemo(() => {
-    if (!allRows.length) return FALLBACK_DATA;
-    return computeDeviceStats(allRows);
-  }, [allRows]);
+  const filteredRows = useMemo(() =>
+    filterRowsByDate(allRows, dateStart, dateEnd),
+  [allRows, dateStart, dateEnd]);
 
-  // ── Derived: extent of loaded dates
-  const dateExtent = useMemo(() => {
-    if (!allRows.length) return { min: '', max: '' };
-    const dates = [...new Set(allRows.map(r => r.dateKey))].sort();
-    return { min: dates[0], max: dates[dates.length - 1] };
-  }, [allRows]);
+  const deviceStats = useMemo(() => buildDeviceStats(filteredRows), [filteredRows]);
 
-  // ── Initialize date range when data loads
-  const prevExtentRef = useRef({ min: '', max: '' });
-  useMemo(() => {
-    if (dateExtent.min && dateExtent.min !== prevExtentRef.current.min) {
-      setDateStart(prev => prev || dateExtent.min);
-      setDateEnd(prev => prev || dateExtent.max);
-      prevExtentRef.current = dateExtent;
-    }
-  }, [dateExtent]);
-
-  // ── Derived: rows filtered by date range
-  const filteredRows = useMemo(() => {
-    if (!allRows.length) return [];
-    return allRows.filter(r => {
-      if (dateStart && r.dateKey < dateStart) return false;
-      if (dateEnd   && r.dateKey > dateEnd)   return false;
-      return true;
-    });
-  }, [allRows, dateStart, dateEnd]);
-
-  // ── Derived: all unique devices in filtered rows, sorted
   const allDevices = useMemo(() => {
-    const s = new Set(filteredRows.map(r => r.device));
-    return [...s].sort();
+    const s = new Set(filteredRows.map(r => r.d));
+    return ALL_DEVICE_IDS.filter(id => s.has(id));
   }, [filteredRows]);
 
-  // ── Derived: all sorted dates in filtered range
   const allDates = useMemo(() => {
-    const s = new Set(filteredRows.map(r => r.dateKey));
+    const s = new Set(filteredRows.map(r => r.k));
     return [...s].sort();
   }, [filteredRows]);
 
-  // ── Derived: which devices to show in device view
-  const visibleDevices = useMemo(() => {
-    if (selectedDevices.size === 0) return allDevices.slice(0, 8);
-    return allDevices.filter(d => selectedDevices.has(d));
-  }, [selectedDevices, allDevices]);
-
-  // ── Derived: per-device, per-day aggregates
   const deviceDayMap = useMemo(() => {
-    // { device: { dateKey: { vol, session, cancel } } }
     const map = {};
     filteredRows.forEach(r => {
-      if (!map[r.device]) map[r.device] = {};
-      if (!map[r.device][r.dateKey]) map[r.device][r.dateKey] = { vol: 0, session: 0, cancel: 0 };
-      map[r.device][r.dateKey].vol++;
-      map[r.device][r.dateKey].session += r.sessionMinutes;
-      if (r.isCancelled) map[r.device][r.dateKey].cancel++;
+      if (!map[r.d]) map[r.d] = {};
+      map[r.d][r.k] = r;
     });
     return map;
   }, [filteredRows]);
 
-  // ── Derived: chart data (one object per date)
+  const visibleChartDevices = useMemo(() =>
+    chartDevices.length > 0 ? allDevices.filter(d => chartDevices.includes(d)) : allDevices.slice(0, 8),
+  [chartDevices, allDevices]);
+
+  // ── Analytics: Nth pct of current view ────────────────────────────────────
+  const currentViewPct = useMemo(() => {
+    const devs = viewMode === 'device' && chartDevices.length > 0 ? chartDevices : allDevices;
+    const byDay = {};
+    devs.forEach(d => {
+      Object.entries(deviceDayMap[d] || {}).forEach(([dt, r]) => {
+        if (!byDay[dt]) byDay[dt] = 0;
+        byDay[dt] += activeMetric === 'session' ? r.s : r.v;
+      });
+    });
+    const sorted = Object.values(byDay).sort((a, b) => a - b);
+    return pctOf(sorted, percentile);
+  }, [allDevices, chartDevices, viewMode, deviceDayMap, activeMetric, percentile]);
+
+  // ── Summary stats ──────────────────────────────────────────────────────────
+  const summaryStats = useMemo(() => ({
+    totalVol:    filteredRows.reduce((s, r) => s + r.v, 0),
+    totalCancel: filteredRows.reduce((s, r) => s + r.c, 0),
+  }), [filteredRows]);
+
+  // ── Chart data ─────────────────────────────────────────────────────────────
   const chartData = useMemo(() => {
     if (!allDates.length) return [];
     const step = allDates.length > 60 ? 7 : allDates.length > 30 ? 3 : 1;
     return allDates.map((date, i) => {
-      const point = { date: fmtLabel(date), fullDate: date, _showLabel: i % step === 0 };
-
+      const p = { date: fmtLabel(date), _i: i, _showLabel: i % step === 0 };
       if (viewMode === 'group') {
-        const groups = { North: 0, South: 0, SCCT: 0, Other: 0 };
-        const gCancel = { North: 0, South: 0, SCCT: 0, Other: 0 };
-        allDevices.forEach(device => {
-          const day = deviceDayMap[device]?.[date];
-          if (!day) return;
-          const g = deriveGroup(device);
-          groups[g] += activeMetric === 'session' ? day.session : day.vol;
-          gCancel[g] += day.cancel;
+        let totalCancel = 0;
+        const groups = { North: 0, South: 0, SCCT: 0 };
+        allDevices.forEach(d => {
+          const r = deviceDayMap[d]?.[date];
+          if (!r) return;
+          const g = deriveGroup(d);
+          if (g in groups) groups[g] += activeMetric === 'session' ? r.s : r.v;
+          totalCancel += r.c;
         });
-        Object.assign(point, groups);
-        point.North_cancel = gCancel.North;
-        point.South_cancel = gCancel.South;
-        point.SCCT_cancel  = gCancel.SCCT;
-        point.total_cancel = gCancel.North + gCancel.South + gCancel.SCCT + gCancel.Other;
+        Object.assign(p, groups, { total_cancel: totalCancel });
       } else {
-        visibleDevices.forEach(device => {
-          const day = deviceDayMap[device]?.[date];
-          point[device]            = day ? (activeMetric === 'session' ? parseFloat(day.session.toFixed(1)) : day.vol) : 0;
-          point[`${device}_cancel`] = day ? day.cancel : 0;
+        let totalCancel = 0;
+        visibleChartDevices.forEach(d => {
+          const r = deviceDayMap[d]?.[date];
+          p[d] = r ? parseFloat((activeMetric === 'session' ? r.s : r.v).toFixed(1)) : 0;
+          totalCancel += r?.c ?? 0;
         });
-        point.total_cancel = visibleDevices.reduce((s, d) => s + (deviceDayMap[d]?.[date]?.cancel || 0), 0);
+        p.total_cancel = totalCancel;
       }
-
-      return point;
+      return p;
     });
-  }, [allDates, allDevices, visibleDevices, deviceDayMap, viewMode, activeMetric]);
+  }, [allDates, allDevices, visibleChartDevices, deviceDayMap, viewMode, activeMetric]);
 
-  // ── Derived: summary stats
-  const summaryStats = useMemo(() => {
-    if (!filteredRows.length) return { totalVol: 0, pctDailySession: 0, totalCancel: 0 };
+  const xTickFmt = (_v, i) => chartData[i]?._showLabel ? chartData[i].date : '';
 
-    const totalVol    = filteredRows.length;
-    const totalCancel = filteredRows.filter(r => r.isCancelled).length;
+  // ─── BOARD MANAGEMENT ──────────────────────────────────────────────────────
 
-    // Compute daily session totals across all devices, find Xth percentile
-    const byDay = {};
-    filteredRows.forEach(r => {
-      byDay[r.dateKey] = (byDay[r.dateKey] || 0) + r.sessionMinutes;
+  const activeBoard = useMemo(() =>
+    boards[activeBoardId] || boards[DEFAULT_BOARD_ID] || DEFAULT_BOARD,
+  [boards, activeBoardId]);
+
+  const updateAssignments = useCallback((fn) => {
+    setBoards(prev => ({
+      ...prev,
+      [activeBoardId]: { ...prev[activeBoardId], assignments: fn(prev[activeBoardId].assignments) },
+    }));
+  }, [activeBoardId, setBoards]);
+
+  const createBoard = useCallback(() => {
+    const id   = `board_${Date.now()}`;
+    const name = `Board ${Object.keys(boards).length + 1}`;
+    setBoards(prev => ({ ...prev, [id]: { id, name, assignments: { ...activeBoard.assignments } } }));
+    setActiveBoardId(id);
+    setEditingBoard({ id, name });
+  }, [boards, activeBoard, setBoards, setActiveBoardId]);
+
+  const renameBoard = useCallback((id, name) => {
+    if (name.trim()) setBoards(prev => ({ ...prev, [id]: { ...prev[id], name: name.trim() } }));
+    setEditingBoard(null);
+  }, [setBoards]);
+
+  const deleteBoard = useCallback((id) => {
+    const keys = Object.keys(boards);
+    if (keys.length <= 1) return;
+    setBoards(prev => { const n = { ...prev }; delete n[id]; return n; });
+    if (activeBoardId === id) setActiveBoardId(keys.filter(k => k !== id)[0]);
+  }, [boards, activeBoardId, setBoards, setActiveBoardId]);
+
+  // ─── TILE SELECTION ────────────────────────────────────────────────────────
+
+  const handleTileClick = useCallback((id, col, e) => {
+    e.preventDefault();
+    if (e.shiftKey && lastAnchor?.col === col) {
+      const colIds = activeBoard.assignments[col] || [];
+      const a = colIds.indexOf(lastAnchor.id), b = colIds.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const range = colIds.slice(Math.min(a, b), Math.max(a, b) + 1);
+        setSelectedTiles(prev => { const n = new Set(prev); range.forEach(x => n.add(x)); return n; });
+        return;
+      }
+    }
+    setSelectedTiles(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setLastAnchor({ id, col });
+  }, [lastAnchor, activeBoard]);
+
+  const handleMoveTo = useCallback((targetCol) => {
+    updateAssignments(prev => {
+      const next = {};
+      ['tech1','tech2','tech3','tech4','unassigned'].forEach(col => {
+        next[col] = (prev[col] || []).filter(id => !selectedTiles.has(id));
+      });
+      next[targetCol] = [...(next[targetCol] || []), ...Array.from(selectedTiles)];
+      return next;
     });
-    const sortedDailyTotals = Object.values(byDay).sort((a, b) => a - b);
-    const pctDailySession = pctOf(sortedDailyTotals, percentile);
+    setSelectedTiles(new Set());
+    setLastAnchor(null);
+  }, [selectedTiles, updateAssignments]);
 
-    return { totalVol, pctDailySession, totalCancel };
-  }, [filteredRows, percentile]);
+  const selectAllInCol = useCallback((col) => {
+    const ids = activeBoard.assignments[col] || [];
+    setSelectedTiles(prev => { const n = new Set(prev); ids.forEach(id => n.add(id)); return n; });
+  }, [activeBoard]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedTiles(new Set());
+    setLastAnchor(null);
+  }, []);
+
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') clearSelection(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [clearSelection]);
+
+  // ─── COLUMN METRICS ────────────────────────────────────────────────────────
+
+  const calcColMetrics = useCallback((unitIds) => {
+    let task = 0;
+    unitIds.forEach(id => {
+      const s = deviceStats[id];
+      if (s) task += calcSimTime(s, percentile);
+    });
+    const n       = unitIds.length;
+    const trips   = Math.ceil(n / settings.cartCapacity);
+    const reload  = trips > 1 ? (trips - 1) * settings.reloadPenalty : 0;
+    const travel  = n * settings.travelPerUnit;
+    const total   = task + reload + travel + settings.lunchMinutes;
+    return { task, n, trips, reload, travel, total, buffer: settings.shiftMinutes - total };
+  }, [deviceStats, percentile, settings]);
+
+  const calcSimVol = useCallback((stat) => {
+    if (!stat) return '—';
+    if (percentile <= 50) return stat.volMedian;
+    if (percentile <= 85) return Math.round(stat.volMedian + ((percentile-50)/35)*(stat.volP85-stat.volMedian));
+    return Math.round(stat.volP85 + ((percentile-85)/15)*(stat.volMax-stat.volP85));
+  }, [percentile]);
 
   // ─── DATA LOADING ──────────────────────────────────────────────────────────
 
@@ -393,36 +313,20 @@ export default function App() {
     setTimeout(() => {
       try {
         const result = Papa.parse(text, { header: true, skipEmptyLines: true });
-        if (!result.data.length) {
-          setLoadError('No rows found. Check that the file has data.');
-          setIsLoading(false);
-          return;
-        }
-        const rows = processCSVData(result);
-        if (!rows.length) {
-          setLoadError('No Non-CS Med rows found after filtering. Check the MedClass column.');
-          setIsLoading(false);
-          return;
-        }
-        const dates = rows.map(r => r.dateKey).sort();
-        const segment = {
-          id: Date.now(),
-          name: name || `Batch ${segments.length + 1}`,
-          rowCount: rows.length,
-          minDate: dates[0],
-          maxDate: dates[dates.length - 1],
-          rows,
-        };
-        setSegments(prev => [...prev, segment]);
+        const rows = processCsvToAggRows(result);
+        if (!rows.length) { setLoadError('No Non-CS Med rows found.'); setIsLoading(false); return; }
+        const dates = rows.map(r => r.k).sort();
+        setUserSegments(prev => [...prev, {
+          id: Date.now(), name: name || `Batch ${prev.length + 1}`,
+          rowCount: rows.length, minDate: dates[0], maxDate: dates[dates.length - 1],
+          loadedAt: new Date().toISOString(), rows,
+        }]);
         setPasteText('');
         setShowDataModal(false);
-        setActiveTab('analytics');
-      } catch (e) {
-        setLoadError('Parse error: ' + e.message);
-      }
+      } catch (e) { setLoadError('Parse error: ' + e.message); }
       setIsLoading(false);
     }, 50);
-  }, [segments.length]);
+  }, [setUserSegments]);
 
   const handleFileLoad = useCallback((e) => {
     const file = e.target.files?.[0];
@@ -433,151 +337,139 @@ export default function App() {
     e.target.value = '';
   }, [loadCSVText]);
 
-  const handlePasteLoad = useCallback(() => {
-    if (!pasteText.trim()) {
-      setLoadError('Paste some CSV text first.');
-      return;
-    }
-    loadCSVText(pasteText, 'Pasted data');
-  }, [pasteText, loadCSVText]);
+  // ─── SESSION EXPORT / IMPORT ───────────────────────────────────────────────
 
-  const deleteSegment = useCallback((id) => {
-    setSegments(prev => prev.filter(s => s.id !== id));
-  }, []);
+  const handleExport = useCallback(() => {
+    const blob = new Blob([JSON.stringify({
+      version: 2, exportedAt: new Date().toISOString(),
+      percentile, dateStart, dateEnd, userSegments,
+      boards, activeBoardId, settings, viewMode, activeMetric, chartDevices,
+    }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: `pyxis-session-${new Date().toISOString().slice(0,10)}.json` });
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [percentile, dateStart, dateEnd, userSegments, boards, activeBoardId, settings, viewMode, activeMetric, chartDevices]);
 
-  // ─── SCHEDULER LOGIC ──────────────────────────────────────────────────────
-
-  const getUnitData = useCallback((id) => {
-    const unit = liveDeviceData.find(u => u.id === id) || FALLBACK_DATA.find(u => u.id === id) || { id, median: 10, p85: 20, max: 30, group: 'Other' };
-    return { ...unit, currentTime: calculateTime(unit, percentile) };
-  }, [liveDeviceData, percentile]);
-
-  const getColorClass = (group) => {
-    const colors = {
-      North: 'bg-blue-50 border-blue-200 text-blue-900',
-      South: 'bg-red-50 border-red-200 text-red-900',
-      SCCT:  'bg-purple-50 border-purple-200 text-purple-900',
-      Other: 'bg-gray-50 border-gray-200 text-gray-900',
+  const handleImport = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const d = JSON.parse(ev.target.result);
+        if (!d.version) throw new Error('Not a valid session file.');
+        if (d.percentile   != null) setPercentile(d.percentile);
+        if (d.dateStart)            setDateStart(d.dateStart);
+        if (d.dateEnd)              setDateEnd(d.dateEnd);
+        if (d.userSegments)         setUserSegments(d.userSegments);
+        if (d.boards)               setBoards(d.boards);
+        if (d.activeBoardId)        setActiveBoardId(d.activeBoardId);
+        if (d.settings)             setSettings(d.settings);
+        if (d.viewMode)             setViewMode(d.viewMode);
+        if (d.activeMetric)         setActiveMetric(d.activeMetric);
+        if (d.chartDevices)         setChartDevices(d.chartDevices);
+        setShowSession(false);
+      } catch (err) { alert('Failed to load session: ' + err.message); }
     };
-    return colors[group] || colors.Other;
-  };
+    reader.readAsText(file);
+    e.target.value = '';
+  }, [setPercentile, setDateStart, setDateEnd, setUserSegments, setBoards, setActiveBoardId, setSettings, setViewMode, setActiveMetric, setChartDevices]);
 
-  const calculateMetrics = (unitIds) => {
-    const units = unitIds.map(getUnitData);
-    const activeFillTime = units.reduce((sum, u) => sum + u.currentTime, 0);
-    const numUnits = units.length;
-    const trips = Math.ceil(numUnits / settings.cartCapacity);
-    const reloadTime = trips > 1 ? (trips - 1) * settings.reloadPenalty : 0;
-    const travelTime = numUnits * settings.travelPerUnit;
-    const totalCommitted = activeFillTime + reloadTime + travelTime + settings.lunchMinutes;
-    const bufferRemaining = settings.shiftMinutes - totalCommitted;
-    return { activeFillTime, numUnits, trips, reloadTime, travelTime, totalCommitted, bufferRemaining };
-  };
+  // ─── HELPERS ───────────────────────────────────────────────────────────────
 
-  const loadOptionA = () => setAssignments({
-    unassigned: [],
-    tech1: ['3NW','3NE','3NSCCT','3SSCCT','4NW','4NE','4NSCCT','5NW','5NE','5NSCCT','5SSCCT'],
-    tech2: ['6NW','6NE','6NSCCT','6SSCCT','7NW','7NE','7NSCCT','7SSCCT','8NW','8NE','8NSCCT','8SSCCT'],
-    tech3: ['3SW','3SE','3CDU','4SW','4SE','5SW','5SE'],
-    tech4: ['6SW','6SE','6ICU','7SW','7SE','8SW','8SE'],
-  });
+  const updateSetting = useCallback((k, v) => setSettings(p => ({ ...p, [k]: Number(v) })), [setSettings]);
+  const hasSelection  = selectedTiles.size > 0;
+  const nSel          = selectedTiles.size;
 
-  const loadOptionB = () => setAssignments({
-    unassigned: [],
-    tech1: ['3NW','3NE','4NW','4NE','5NW','5NE','6NW','6NE','7NW','7NE','8NW','8NE'],
-    tech2: ['3NSCCT','3SSCCT','4NSCCT','5NSCCT','5SSCCT','6NSCCT','6SSCCT','7NSCCT','7SSCCT','8NSCCT','8SSCCT'],
-    tech3: ['3SW','3SE','3CDU','4SW','4SE','5SW','5SE'],
-    tech4: ['6SW','6SE','6ICU','7SW','7SE','8SW','8SE'],
-  });
+  // ─── SCHEDULER COLUMN COMPONENT ───────────────────────────────────────────
 
-  const clearAll = () => setAssignments({
-    unassigned: liveDeviceData.map(u => u.id),
-    tech1: [], tech2: [], tech3: [], tech4: [],
-  });
-
-  const handleDragStart = (e, id, sourceKey) => {
-    setDraggedId(id);
-    setSourceColumn(sourceKey);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-  const handleDragOver = (e) => e.preventDefault();
-  const handleDrop = (e, targetKey) => {
-    e.preventDefault();
-    if (!draggedId || sourceColumn === targetKey) return;
-    setAssignments(prev => ({
-      ...prev,
-      [sourceColumn]: prev[sourceColumn].filter(id => id !== draggedId),
-      [targetKey]:    [...prev[targetKey], draggedId],
-    }));
-    setDraggedId(null);
-    setSourceColumn(null);
-  };
-
-  const updateSetting = (key, val) =>
-    setSettings(prev => ({ ...prev, [key]: Number(val) }));
-
-  // ─── SUBCOMPONENTS ────────────────────────────────────────────────────────
-
-  const Column = ({ title, columnKey, unitIds }) => {
-    const metrics = calculateMetrics(unitIds);
-    const isOverworked = metrics.bufferRemaining < 30;
-    const fillPct   = Math.min((metrics.activeFillTime / settings.shiftMinutes) * 100, 100);
-    const travelPct = Math.min(((metrics.travelTime + metrics.reloadTime) / settings.shiftMinutes) * 100, 100);
-    const lunchPct  = (settings.lunchMinutes / settings.shiftMinutes) * 100;
+  const SchedulerColumn = ({ title, colKey }) => {
+    const unitIds  = activeBoard.assignments[colKey] || [];
+    const m        = calcColMetrics(unitIds);
+    const isOver   = m.buffer < 30;
+    const isUnasn  = colKey === 'unassigned';
+    const fillPct  = Math.min((m.task  / settings.shiftMinutes) * 100, 100);
+    const travPct  = Math.min(((m.travel + m.reload) / settings.shiftMinutes) * 100, 100);
+    const lunPct   = (settings.lunchMinutes / settings.shiftMinutes) * 100;
 
     return (
-      <div
-        className={`flex-1 min-w-[260px] bg-white p-4 rounded-xl border-2 flex flex-col ${isOverworked ? 'border-red-400' : 'border-slate-200'}`}
-        onDragOver={handleDragOver}
-        onDrop={(e) => handleDrop(e, columnKey)}
-      >
-        <div className="flex justify-between items-center mb-3">
-          <h2 className="font-bold text-slate-800 text-lg">{title}</h2>
-          <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-sm font-semibold border border-slate-200">
-            {metrics.numUnits} Units
-          </span>
-        </div>
+      <div className={`flex flex-col min-w-[230px] flex-1 bg-white p-4 rounded-xl border-2
+        ${isOver ? 'border-red-400' : isUnasn ? 'border-dashed border-slate-300' : 'border-slate-200'}`}>
 
-        <div className="mb-4">
-          <div className="flex justify-between text-xs text-slate-500 mb-1 font-medium">
-            <span>Shift Load ({settings.shiftMinutes / 60}h)</span>
-            <span className={isOverworked ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold'}>
-              {metrics.bufferRemaining}m Buffer
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="font-bold text-slate-800">{title}</h2>
+          <div className="flex items-center gap-2">
+            {hasSelection && (
+              <button onClick={() => selectAllInCol(colKey)}
+                className="text-xs text-blue-600 underline whitespace-nowrap">+All</button>
+            )}
+            <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-semibold border border-slate-200">
+              {unitIds.length}
             </span>
           </div>
-          <div className="w-full h-3 bg-slate-100 rounded-full flex overflow-hidden border border-slate-200">
-            <div className="bg-blue-500 h-full transition-all"  style={{ width: `${fillPct}%` }} />
-            <div className="bg-amber-400 h-full transition-all" style={{ width: `${travelPct}%` }} />
-            <div className="bg-green-500 h-full transition-all" style={{ width: `${lunchPct}%` }} />
-            {isOverworked && <div className="bg-red-500 h-full" style={{ width: '100%' }} />}
-          </div>
         </div>
 
-        <div className="text-xs text-slate-600 mb-4 bg-slate-50 p-2.5 rounded border border-slate-100 grid grid-cols-2 gap-2">
-          <div>Task: <strong className="text-slate-800">{metrics.activeFillTime}m</strong></div>
-          <div>Travel/Reload: <strong className="text-slate-800">{metrics.travelTime + metrics.reloadTime}m</strong></div>
-        </div>
+        {!isUnasn && (
+          <>
+            <div className="flex justify-between text-xs text-slate-500 mb-1">
+              <span>{settings.shiftMinutes / 60}h shift</span>
+              <span className={isOver ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold'}>
+                {m.buffer}m buffer
+              </span>
+            </div>
+            <div className="w-full h-2.5 bg-slate-100 rounded-full flex overflow-hidden border border-slate-200 mb-2.5">
+              <div className="bg-blue-500 h-full transition-all"    style={{ width: `${fillPct}%` }} />
+              <div className="bg-amber-400 h-full transition-all"   style={{ width: `${travPct}%` }} />
+              <div className="bg-emerald-500 h-full transition-all" style={{ width: `${lunPct}%` }} />
+            </div>
+            <div className="grid grid-cols-2 gap-1 text-xs text-slate-500 mb-2.5 bg-slate-50 rounded p-2 border border-slate-100">
+              <span>Task: <strong className="text-slate-700">{m.task}m</strong></span>
+              <span>Travel+Reload: <strong className="text-slate-700">{m.travel + m.reload}m</strong></span>
+            </div>
+          </>
+        )}
 
-        <div className="space-y-2 flex-1 overflow-y-auto min-h-[150px] pr-1">
+        {hasSelection && (
+          <button onClick={() => handleMoveTo(colKey)}
+            className={`w-full mb-2 py-1.5 rounded text-xs font-bold border transition
+              ${isUnasn ? 'bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-100'
+                        : 'bg-blue-600 text-white border-blue-700 hover:bg-blue-700'}`}>
+            Move {nSel} here
+          </button>
+        )}
+
+        <div className="space-y-1.5 flex-1 overflow-y-auto min-h-[80px]">
           {unitIds.map(id => {
-            const unit = getUnitData(id);
+            const stat = deviceStats[id];
+            const g    = stat?.group || deriveGroup(id);
+            const simT = stat ? calcSimTime(stat, percentile) : '?';
+            const simV = calcSimVol(stat);
+            const sel  = selectedTiles.has(id);
             return (
-              <div
+              <button
                 key={id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, id, columnKey)}
-                className={`p-2 border rounded cursor-grab active:cursor-grabbing flex justify-between items-center transition-transform hover:-translate-y-0.5 ${getColorClass(unit.group)}`}
+                onClick={e => handleTileClick(id, colKey, e)}
+                className={`w-full text-left px-2.5 py-2 border rounded-lg flex justify-between items-center transition-all select-none
+                  ${sel ? 'ring-2 ring-blue-500 ring-offset-1 bg-blue-600 border-blue-700 text-white'
+                        : 'hover:brightness-95'}`}
+                style={!sel ? { background: GROUP_LIGHT[g], borderColor: GROUP_BORDER[g], color: GROUP_TEXT[g] } : {}}
               >
-                <span className="font-bold text-sm">{unit.id}</span>
-                <span className="text-xs font-semibold bg-white px-1.5 py-0.5 rounded shadow-sm">
-                  {unit.currentTime}m
+                <span className="font-bold text-sm">{id}</span>
+                <span className={`flex items-center gap-1 text-xs font-mono ${sel ? 'text-blue-100' : ''}`}>
+                  <span className={`px-1.5 py-0.5 rounded font-semibold ${sel ? 'bg-blue-500' : 'bg-white/70'}`}>
+                    {simT}m
+                  </span>
+                  <span className={`px-1.5 py-0.5 rounded ${sel ? 'bg-blue-500/60' : 'bg-white/50'} opacity-80`}>
+                    {simV}
+                  </span>
                 </span>
-              </div>
+              </button>
             );
           })}
           {unitIds.length === 0 && (
-            <div className="text-slate-400 text-center text-sm py-8 border-2 border-dashed border-slate-200 rounded">
-              Drop units here
+            <div className="text-slate-400 text-center text-sm py-8 border-2 border-dashed border-slate-200 rounded-lg">
+              {hasSelection ? 'Click "Move here"' : 'Empty'}
             </div>
           )}
         </div>
@@ -587,463 +479,459 @@ export default function App() {
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
 
-  const hasData = allRows.length > 0;
-  const isUsingLiveData = hasData;
-
-  // Build chart bar keys
-  const groupKeys   = ['North', 'South', 'SCCT'];
-  const cancelKeys  = viewMode === 'group'
-    ? ['North_cancel', 'South_cancel', 'SCCT_cancel']
-    : visibleDevices.map(d => `${d}_cancel`);
-
-  const xAxisTickFormatter = (val, i) => {
-    const point = chartData[i];
-    return point?._showLabel ? val : '';
-  };
-
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col">
+    <div className="min-h-screen bg-slate-50 text-slate-900" style={{ fontFamily: "'Geist Sans', 'Helvetica Neue', sans-serif" }}>
 
-      {/* ─── HEADER ─────────────────────────────────────────────────────── */}
-      <header className="bg-white border-b border-slate-200 pt-6 px-6">
-        <div className="max-w-screen-xl mx-auto">
-          <div className="flex justify-between items-end mb-5">
-            <div>
-              <h1 className="text-3xl font-extrabold tracking-tight">Pyxis Strategy Center</h1>
-              <p className="text-slate-500 mt-1 text-sm">
-                {isUsingLiveData
-                  ? `Live data: ${allRows.length.toLocaleString()} transactions from ${fmtLabel(dateExtent.min)} to ${fmtLabel(dateExtent.max)}`
-                  : 'No CSV loaded. Scheduler is running on baseline data.'}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowDataModal(true)}
-                className="flex items-center gap-2 bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-slate-200 transition"
-              >
-                <IconUpload /> Load Data
-              </button>
-              <button
-                onClick={() => setShowSummary(true)}
-                className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-slate-700 transition"
-              >
-                <IconPresentation /> Executive Summary
-              </button>
-            </div>
-          </div>
+      {/* HEADER */}
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
 
-          <div className="flex gap-6">
-            {[
-              { key: 'scheduler', label: 'Routing & Simulation', icon: <IconSettings /> },
-              { key: 'analytics', label: 'Analytics',           icon: <IconChart />    },
-              { key: 'data',      label: 'Data Engine',          icon: <IconDatabase /> },
-            ].map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                className={`pb-3 font-semibold text-sm flex items-center gap-2 transition-colors border-b-2 ${
-                  activeTab === tab.key
-                    ? 'border-blue-600 text-blue-700'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                {tab.icon} {tab.label}
-              </button>
-            ))}
+        {/* Top row */}
+        <div className="max-w-screen-xl mx-auto px-6 pt-4 flex justify-between items-center">
+          <div>
+            <h1 className="text-xl font-extrabold tracking-tight">Pyxis Strategy Center</h1>
+            <p className="text-slate-400 text-xs mt-0.5">
+              {fmtLabel(BG_DATE_MIN)} – {fmtLabel(BG_DATE_MAX)} baseline
+              {userSegments.length > 0 && ` + ${userSegments.length} appended batch${userSegments.length > 1 ? 'es' : ''}`}
+            </p>
           </div>
+          <div className="flex gap-2">
+            <button onClick={() => setShowSession(true)}
+              className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-slate-200 transition">
+              <IcDownload /> Session
+            </button>
+            <button onClick={() => setShowDataModal(true)}
+              className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-slate-200 transition">
+              <IcUpload /> Load CSV
+            </button>
+            <button onClick={() => setShowSummary(true)}
+              className="flex items-center gap-1.5 bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-slate-700 transition">
+              Executive Summary
+            </button>
+          </div>
+        </div>
+
+        {/* Global filter bar */}
+        <div className="max-w-screen-xl mx-auto px-6 py-2 flex flex-wrap items-center gap-2 mt-2 border-t border-slate-100">
+          <span className="text-xs text-slate-400 font-medium uppercase tracking-wider mr-1 shrink-0">Active:</span>
+          <span className="flex items-center gap-1.5 bg-blue-50 border border-blue-200 text-blue-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+            {fmtLabel(dateStart)} – {fmtLabel(dateEnd)}
+            {(dateStart !== BG_DATE_MIN || dateEnd !== BG_DATE_MAX) && (
+              <button onClick={() => { setDateStart(BG_DATE_MIN); setDateEnd(BG_DATE_MAX); }}
+                className="ml-1 text-blue-400 hover:text-blue-700">×</button>
+            )}
+          </span>
+          <span className="flex items-center gap-1.5 bg-purple-50 border border-purple-200 text-purple-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+            {percentile}th pct
+          </span>
+          <span className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            {activeBoard?.name || '—'}
+          </span>
+          {chartDevices.length > 0 && (
+            <span className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              {chartDevices.slice(0,3).join(', ')}{chartDevices.length > 3 ? ` +${chartDevices.length-3}` : ''}
+              <button onClick={() => setChartDevices([])} className="ml-1 text-amber-400 hover:text-amber-700">×</button>
+            </span>
+          )}
+          {hasSelection && (
+            <span className="flex items-center gap-1.5 bg-blue-600 text-white rounded-full px-2.5 py-1 text-xs font-semibold ml-auto shrink-0">
+              {nSel} tile{nSel > 1 ? 's' : ''} selected
+              <button onClick={clearSelection} className="ml-1 opacity-70 hover:opacity-100">×</button>
+            </span>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div className="max-w-screen-xl mx-auto px-6 flex gap-6 border-t border-slate-100 mt-1">
+          {[
+            { key: 'scheduler', label: 'Routing & Simulation', icon: <IcSettings /> },
+            { key: 'analytics', label: 'Analytics',            icon: <IcChart /> },
+            { key: 'data',      label: 'Data Engine',          icon: <IcDatabase /> },
+          ].map(t => (
+            <button key={t.key} onClick={() => setActiveTab(t.key)}
+              className={`pb-3 font-semibold text-sm flex items-center gap-1.5 border-b-2 transition-colors
+                ${activeTab === t.key ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+              {t.icon} {t.label}
+            </button>
+          ))}
         </div>
       </header>
 
-      <main className="flex-1 max-w-screen-xl w-full mx-auto p-6">
+      <main className="max-w-screen-xl w-full mx-auto p-6 pb-24">
 
-        {/* ─── SCHEDULER TAB ──────────────────────────────────────────────── */}
+        {/* ── BULK MOVE BAR ─────────────────────────────────────────────── */}
+        {hasSelection && (
+          <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-2xl shadow-2xl px-5 py-3 flex items-center gap-3 z-40 border border-slate-700 flex-wrap justify-center">
+            <span className="text-sm font-semibold text-slate-300 shrink-0">
+              Move {nSel} to:
+            </span>
+            {['tech1','tech2','tech3','tech4'].map((col, i) => (
+              <button key={col} onClick={() => handleMoveTo(col)}
+                className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0">
+                Tech {i+1}
+              </button>
+            ))}
+            <button onClick={() => handleMoveTo('unassigned')}
+              className="bg-slate-600 hover:bg-slate-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0">
+              Unassigned
+            </button>
+            <button onClick={clearSelection} className="ml-2 text-slate-400 hover:text-white transition shrink-0" title="Esc">
+              <IcClose />
+            </button>
+          </div>
+        )}
+
+        {/* ── SCHEDULER TAB ───────────────────────────────────────────────── */}
         {activeTab === 'scheduler' && (
-          <div className="space-y-5">
-            {isUsingLiveData && (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 text-sm text-emerald-800 font-medium flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-                Scheduler is using live CSV data. Times reflect actual daily session totals.
-              </div>
-            )}
+          <div className="space-y-4">
 
-            {/* Assumptions bar */}
-            <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-wrap gap-6 items-center">
-              <div className="font-bold text-xs text-slate-500 uppercase tracking-wider mr-2">Assumptions</div>
+            {/* Assumptions */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-wrap gap-5 items-center">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">Assumptions</span>
               {[
-                { label: 'Shift (m)',        key: 'shiftMinutes',  w: 'w-16' },
-                { label: 'Lunch (m)',        key: 'lunchMinutes',  w: 'w-14' },
-                { label: 'Cart Size',        key: 'cartCapacity',  w: 'w-14' },
-                { label: 'Reload Pen. (m)',  key: 'reloadPenalty', w: 'w-14' },
-                { label: 'Travel/Unit (m)',  key: 'travelPerUnit', w: 'w-14' },
+                { label: 'Shift (m)',       key: 'shiftMinutes',  w: 'w-16' },
+                { label: 'Lunch (m)',       key: 'lunchMinutes',  w: 'w-14' },
+                { label: 'Cart Size',       key: 'cartCapacity',  w: 'w-14' },
+                { label: 'Reload (m)',      key: 'reloadPenalty', w: 'w-14' },
+                { label: 'Travel/Unit (m)', key: 'travelPerUnit', w: 'w-14' },
               ].map(({ label, key, w }) => (
-                <div key={key} className="flex items-center gap-2">
-                  <label className="text-xs text-slate-500 font-medium">{label}</label>
-                  <input
-                    type="number"
-                    value={settings[key]}
+                <label key={key} className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">{label}</span>
+                  <input type="number" value={settings[key]}
                     onChange={e => updateSetting(key, e.target.value)}
-                    className={`${w} p-1 border rounded text-sm text-center font-semibold bg-slate-50`}
-                  />
-                </div>
+                    className={`${w} p-1 border border-slate-200 rounded text-sm text-center font-semibold bg-slate-50`} />
+                </label>
               ))}
-
-              <div className="ml-auto flex items-center gap-3">
-                <label className="text-xs text-slate-500 font-medium">Percentile</label>
-                <input
-                  type="range" min="50" max="100" value={percentile}
+              <label className="ml-auto flex items-center gap-3">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Percentile</span>
+                <input type="range" min="50" max="100" value={percentile}
                   onChange={e => setPercentile(Number(e.target.value))}
-                  className="w-32 accent-blue-600"
-                />
-                <span className="font-bold text-blue-700 text-sm w-12">{percentile}th</span>
-              </div>
+                  className="w-28 accent-blue-600" />
+                <span className="font-bold text-blue-700 text-sm w-10">{percentile}th</span>
+              </label>
             </div>
 
-            {/* Preset buttons */}
-            <div className="flex justify-between items-center">
-              <div className="flex gap-3">
-                <button onClick={loadOptionA} className="flex items-center gap-1.5 bg-blue-50 text-blue-700 border border-blue-200 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-100 transition">
-                  <IconPlay /> Load Option A (Bridge)
-                </button>
-                <button onClick={loadOptionB} className="flex items-center gap-1.5 bg-purple-50 text-purple-700 border border-purple-200 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-purple-100 transition">
-                  <IconPlay /> Load Option B (Silos)
-                </button>
-              </div>
-              <button onClick={clearAll} className="text-slate-500 hover:text-red-600 text-sm font-medium underline">
-                Clear Board
+            {/* Board selector */}
+            <div className="bg-white p-3 rounded-xl border border-slate-200 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500 font-semibold uppercase tracking-wide mr-1">Board:</span>
+              {Object.values(boards).map(b => (
+                <div key={b.id} className="flex items-center">
+                  {editingBoard?.id === b.id ? (
+                    <form onSubmit={e => { e.preventDefault(); renameBoard(b.id, editingBoard.name); }} className="flex gap-1">
+                      <input autoFocus value={editingBoard.name}
+                        onChange={e => setEditingBoard(p => ({ ...p, name: e.target.value }))}
+                        onBlur={() => renameBoard(b.id, editingBoard.name)}
+                        className="border border-blue-400 rounded px-2 py-1 text-xs font-semibold w-32 focus:outline-none focus:ring-1 focus:ring-blue-400" />
+                      <button type="submit" className="text-blue-600"><IcCheck /></button>
+                    </form>
+                  ) : (
+                    <button onClick={() => setActiveBoardId(b.id)}
+                      className={`px-3 py-1.5 rounded-l text-xs font-semibold border transition
+                        ${activeBoardId === b.id ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                      {b.name}
+                    </button>
+                  )}
+                  {activeBoardId === b.id && editingBoard?.id !== b.id && (
+                    <div className="flex border-t border-b border-r border-slate-200 rounded-r overflow-hidden">
+                      <button onClick={() => setEditingBoard({ id: b.id, name: b.name })}
+                        className="px-2 py-1.5 text-slate-400 hover:bg-slate-100 transition" title="Rename"><IcEdit /></button>
+                      <button onClick={createBoard}
+                        className="px-2 py-1.5 text-slate-400 hover:bg-slate-100 transition" title="Duplicate"><IcCopy /></button>
+                      {Object.keys(boards).length > 1 && (
+                        <button onClick={() => deleteBoard(b.id)}
+                          className="px-2 py-1.5 text-red-400 hover:bg-red-50 transition" title="Delete"><IcTrash /></button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <button onClick={createBoard}
+                className="flex items-center gap-1 px-3 py-1.5 rounded text-xs font-semibold border border-dashed border-slate-300 text-slate-500 hover:bg-slate-50 transition">
+                <IcPlus /> New Board
               </button>
             </div>
 
+            {/* Legend + hint */}
+            <div className="flex flex-wrap gap-2 text-xs items-center">
+              {[['North','bg-blue-100 text-blue-800'],['South','bg-red-100 text-red-800'],['SCCT','bg-purple-100 text-purple-800']].map(([g, cls]) => (
+                <span key={g} className={`px-2 py-0.5 rounded font-medium ${cls}`}>{g}</span>
+              ))}
+              <span className="text-slate-400 text-xs ml-1">
+                Click to select. Shift+click for range within column. Esc to cancel. Tile = session min | refill vol at {percentile}th pct.
+              </span>
+            </div>
+
             {/* Columns */}
-            <div className="flex gap-4 overflow-x-auto pb-4 items-start">
-              <Column title="Tech 1" columnKey="tech1" unitIds={assignments.tech1} />
-              <Column title="Tech 2" columnKey="tech2" unitIds={assignments.tech2} />
-              <Column title="Tech 3" columnKey="tech3" unitIds={assignments.tech3} />
-              <Column title="Tech 4" columnKey="tech4" unitIds={assignments.tech4} />
-              <div className="border-l-2 border-slate-200 pl-4 border-dashed">
-                <Column title="Unassigned" columnKey="unassigned" unitIds={assignments.unassigned} />
+            <div className="flex gap-3 overflow-x-auto items-start">
+              <SchedulerColumn title="Tech 1" colKey="tech1" />
+              <SchedulerColumn title="Tech 2" colKey="tech2" />
+              <SchedulerColumn title="Tech 3" colKey="tech3" />
+              <SchedulerColumn title="Tech 4" colKey="tech4" />
+              <div className="border-l-2 border-dashed border-slate-200 pl-3">
+                <SchedulerColumn title="Unassigned" colKey="unassigned" />
               </div>
             </div>
           </div>
         )}
 
-        {/* ─── ANALYTICS TAB ──────────────────────────────────────────────── */}
+        {/* ── ANALYTICS TAB ───────────────────────────────────────────────── */}
         {activeTab === 'analytics' && (
           <div className="space-y-5">
-            {!hasData ? (
-              <div className="bg-white rounded-xl border border-slate-200 p-16 text-center">
-                <div className="text-4xl mb-4">📊</div>
-                <h2 className="text-xl font-bold text-slate-700 mb-2">No data loaded</h2>
-                <p className="text-slate-500 mb-6 text-sm">Load a CSV to see analytics.</p>
-                <button
-                  onClick={() => setShowDataModal(true)}
-                  className="bg-slate-800 text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-700 transition"
-                >
-                  Load Data
-                </button>
+
+            {/* Global controls */}
+            <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-wrap gap-5 items-center">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-500">From</label>
+                <input type="date" value={dateStart} min={BG_DATE_MIN} max={BG_DATE_MAX}
+                  onChange={e => setDateStart(e.target.value)}
+                  className="border border-slate-200 rounded px-2 py-1 text-sm bg-slate-50" />
               </div>
-            ) : (
-              <>
-                {/* ── Controls ── */}
-                <div className="bg-white p-4 rounded-xl border border-slate-200 flex flex-wrap gap-5 items-center">
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-slate-500 font-medium">From</label>
-                    <input
-                      type="date" value={dateStart} min={dateExtent.min} max={dateExtent.max}
-                      onChange={e => setDateStart(e.target.value)}
-                      className="border border-slate-200 rounded px-2 py-1 text-sm bg-slate-50"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-slate-500 font-medium">To</label>
-                    <input
-                      type="date" value={dateEnd} min={dateExtent.min} max={dateExtent.max}
-                      onChange={e => setDateEnd(e.target.value)}
-                      className="border border-slate-200 rounded px-2 py-1 text-sm bg-slate-50"
-                    />
-                  </div>
-                  <button
-                    onClick={() => { setDateStart(dateExtent.min); setDateEnd(dateExtent.max); }}
-                    className="text-xs text-blue-600 underline"
-                  >
-                    Reset range
-                  </button>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-500">To</label>
+                <input type="date" value={dateEnd} min={BG_DATE_MIN} max={BG_DATE_MAX}
+                  onChange={e => setDateEnd(e.target.value)}
+                  className="border border-slate-200 rounded px-2 py-1 text-sm bg-slate-50" />
+              </div>
+              <button onClick={() => { setDateStart(BG_DATE_MIN); setDateEnd(BG_DATE_MAX); }}
+                className="text-xs text-blue-600 underline">Reset</button>
+              <label className="ml-auto flex items-center gap-3">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Percentile</span>
+                <input type="range" min="50" max="100" value={percentile}
+                  onChange={e => setPercentile(Number(e.target.value))}
+                  className="w-28 accent-blue-600" />
+                <span className="font-bold text-blue-700 text-sm w-10">{percentile}th</span>
+              </label>
+            </div>
 
-                  <div className="ml-auto flex items-center gap-3">
-                    <label className="text-xs text-slate-500 font-medium whitespace-nowrap">Percentile</label>
-                    <input
-                      type="range" min="50" max="100" value={percentile}
-                      onChange={e => setPercentile(Number(e.target.value))}
-                      className="w-28 accent-blue-600"
-                    />
-                    <span className="font-bold text-blue-700 text-sm w-12">{percentile}th</span>
-                  </div>
+            {/* Summary cards */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-5">
+                <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">Total Transactions</div>
+                <div className="text-3xl font-extrabold">{summaryStats.totalVol.toLocaleString()}</div>
+                <div className="text-xs text-slate-400 mt-1">Non-CS Med in date range</div>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-5">
+                <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">
+                  {percentile}th Pct — {activeMetric === 'session' ? 'Session Time' : 'Volume'}
                 </div>
-
-                {/* ── Summary cards ── */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="bg-white rounded-xl border border-slate-200 p-5">
-                    <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">Total Transactions</div>
-                    <div className="text-3xl font-extrabold text-slate-800">{summaryStats.totalVol.toLocaleString()}</div>
-                    <div className="text-xs text-slate-400 mt-1">Non-CS Med refills in range</div>
-                  </div>
-                  <div className="bg-white rounded-xl border border-slate-200 p-5">
-                    <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">
-                      {percentile}th Pct Daily Session
-                    </div>
-                    <div className="text-3xl font-extrabold text-blue-700">
-                      {Math.round(summaryStats.pctDailySession).toLocaleString()}<span className="text-lg font-semibold ml-1">min</span>
-                    </div>
-                    <div className="text-xs text-slate-400 mt-1">Total across all devices at {percentile}th pct day</div>
-                  </div>
-                  <div className="bg-white rounded-xl border border-slate-200 p-5">
-                    <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">Nurse Interruptions</div>
-                    <div className="text-3xl font-extrabold text-amber-600">{summaryStats.totalCancel.toLocaleString()}</div>
-                    <div className="text-xs text-slate-400 mt-1">Refill CANCELLED in range</div>
-                  </div>
+                <div className="text-3xl font-extrabold text-blue-700">
+                  {activeMetric === 'session' ? `${Math.round(currentViewPct)}m` : Math.round(currentViewPct).toLocaleString()}
                 </div>
-
-                {/* ── Chart controls ── */}
-                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                  <div className="flex items-center gap-0 border-b border-slate-200 px-4 pt-4 pb-0 flex-wrap gap-y-2">
-                    <div className="flex rounded-lg border border-slate-200 overflow-hidden mr-4 mb-4">
-                      {['session', 'volume'].map(m => (
-                        <button key={m}
-                          onClick={() => setActiveMetric(m)}
-                          className={`px-3 py-1.5 text-xs font-semibold transition ${activeMetric === m ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                        >
-                          {m === 'session' ? 'Session Time (min)' : 'Volume (refills)'}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="flex rounded-lg border border-slate-200 overflow-hidden mr-4 mb-4">
-                      {['group', 'device'].map(m => (
-                        <button key={m}
-                          onClick={() => setViewMode(m)}
-                          className={`px-3 py-1.5 text-xs font-semibold transition ${viewMode === m ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                        >
-                          By {m === 'group' ? 'Group' : 'Device'}
-                        </button>
-                      ))}
-                    </div>
-
-                    {viewMode === 'device' && (
-                      <div className="flex flex-wrap gap-1 mb-4 flex-1">
-                        <button
-                          onClick={() => setSelectedDevices(new Set())}
-                          className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                        >
-                          Top 8
-                        </button>
-                        <button
-                          onClick={() => setSelectedDevices(new Set(allDevices))}
-                          className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                        >
-                          All
-                        </button>
-                        <button
-                          onClick={() => setSelectedDevices(new Set())}
-                          className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                        >
-                          Clear
-                        </button>
-                        {allDevices.map(d => {
-                          const g = deriveGroup(d);
-                          const active = selectedDevices.has(d) || (selectedDevices.size === 0 && visibleDevices.includes(d));
-                          return (
-                            <button
-                              key={d}
-                              onClick={() => setSelectedDevices(prev => {
-                                const next = new Set(prev.size ? prev : visibleDevices);
-                                if (next.has(d)) next.delete(d); else next.add(d);
-                                return next;
-                              })}
-                              className="text-xs px-2 py-1 rounded border transition font-medium"
-                              style={{
-                                background:   active ? GROUP_LIGHT[g]   : '#f8fafc',
-                                borderColor:  active ? GROUP_BORDER[g]  : '#e2e8f0',
-                                color:        active ? GROUP_TEXT[g]    : '#64748b',
-                              }}
-                            >
-                              {d}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ── Main chart ── */}
-                  <div className="p-4">
-                    <p className="text-xs text-slate-400 mb-3">
-                      {viewMode === 'group' ? 'Stacked by tower group.' : `Showing ${visibleDevices.length} devices.`}
-                      {allDates.length > 30 ? ' X-axis labels every few days for readability.' : ''}
-                    </p>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <ComposedChart data={chartData} margin={{ top: 4, right: 16, bottom: 4, left: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 11, fill: '#94a3b8' }}
-                          tickFormatter={(val, i) => xAxisTickFormatter(val, i)}
-                          interval={0}
-                        />
-                        <YAxis
-                          tick={{ fontSize: 11, fill: '#94a3b8' }}
-                          tickFormatter={v => activeMetric === 'session' ? `${Math.round(v)}m` : v}
-                          width={48}
-                        />
-                        <Tooltip content={<CustomTooltip metric={activeMetric} />} />
-                        <Legend wrapperStyle={{ fontSize: 12 }} />
-
-                        {viewMode === 'group'
-                          ? groupKeys.map(g => (
-                              <Bar key={g} dataKey={g} stackId="a" fill={GROUP_COLORS[g]} maxBarSize={30} />
-                            ))
-                          : visibleDevices.map((d, i) => (
-                              <Bar key={d} dataKey={d} stackId="a" fill={DEVICE_PALETTE[i % DEVICE_PALETTE.length]} maxBarSize={30} />
-                            ))
-                        }
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  {/* ── Interruptions chart ── */}
-                  <div className="border-t border-slate-100 px-4 pb-4 pt-3">
-                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-                      Nurse Interruptions (Refill CANCELLED per day)
-                    </p>
-                    <ResponsiveContainer width="100%" height={120}>
-                      <BarChart data={chartData} margin={{ top: 0, right: 16, bottom: 0, left: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis
-                          dataKey="date"
-                          tick={{ fontSize: 10, fill: '#94a3b8' }}
-                          tickFormatter={(val, i) => xAxisTickFormatter(val, i)}
-                          interval={0}
-                        />
-                        <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} width={32} />
-                        <Tooltip content={<InterruptionTooltip />} />
-                        <Bar dataKey="total_cancel" fill="#f59e0b" name="Cancellations" maxBarSize={30} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                <div className="text-xs text-slate-400 mt-1">
+                  {viewMode === 'device' && chartDevices.length > 0
+                    ? `${chartDevices.length} device${chartDevices.length > 1 ? 's' : ''} selected`
+                    : 'All devices, daily total'}
                 </div>
-              </>
-            )}
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-5">
+                <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">Nurse Interruptions</div>
+                <div className="text-3xl font-extrabold text-amber-600">{summaryStats.totalCancel.toLocaleString()}</div>
+                <div className="text-xs text-slate-400 mt-1">Refill CANCELLED in range</div>
+              </div>
+            </div>
+
+            {/* Chart */}
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+              <div className="flex flex-wrap items-center gap-2 px-4 pt-4 pb-3 border-b border-slate-100">
+                {/* Metric toggle */}
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                  {['session','volume'].map(m => (
+                    <button key={m} onClick={() => setActiveMetric(m)}
+                      className={`px-3 py-1.5 text-xs font-semibold transition
+                        ${activeMetric === m ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                      {m === 'session' ? 'Session Time' : 'Volume'}
+                    </button>
+                  ))}
+                </div>
+                {/* View mode toggle */}
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                  {['group','device'].map(m => (
+                    <button key={m} onClick={() => setViewMode(m)}
+                      className={`px-3 py-1.5 text-xs font-semibold transition
+                        ${viewMode === m ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
+                      By {m === 'group' ? 'Group' : 'Device'}
+                    </button>
+                  ))}
+                </div>
+                {/* Device filter (device mode only) */}
+                {viewMode === 'device' && (
+                  <div className="flex flex-wrap gap-1">
+                    <button onClick={() => setChartDevices([])}
+                      className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50">Top 8</button>
+                    <button onClick={() => setChartDevices([...allDevices])}
+                      className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50">All</button>
+                    <button onClick={() => setChartDevices([])}
+                      className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-500 hover:bg-slate-50">Clear</button>
+                    {allDevices.map(d => {
+                      const g      = deriveGroup(d);
+                      const active = chartDevices.length === 0
+                        ? allDevices.slice(0,8).includes(d)
+                        : chartDevices.includes(d);
+                      return (
+                        <button key={d}
+                          onClick={() => setChartDevices(prev => {
+                            const base = prev.length ? [...prev] : [...allDevices.slice(0,8)];
+                            const idx = base.indexOf(d);
+                            return idx === -1 ? [...base, d] : base.filter(x => x !== d);
+                          })}
+                          className="text-xs px-2 py-1 rounded border transition font-medium"
+                          style={{
+                            background:  active ? GROUP_LIGHT[g]  : '#f8fafc',
+                            borderColor: active ? GROUP_BORDER[g] : '#e2e8f0',
+                            color:       active ? GROUP_TEXT[g]   : '#64748b',
+                          }}>
+                          {d}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4">
+                <ResponsiveContainer width="100%" height={300}>
+                  <ComposedChart data={chartData} margin={{ top: 4, right: 16, bottom: 4, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#94a3b8' }}
+                      tickFormatter={xTickFmt} interval={0} />
+                    <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }}
+                      tickFormatter={v => activeMetric === 'session' ? `${Math.round(v)}m` : v}
+                      width={44} />
+                    <Tooltip content={<ChartTooltip metric={activeMetric} />} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                    {viewMode === 'group'
+                      ? ['North','South','SCCT'].map(g => (
+                          <Bar key={g} dataKey={g} stackId="a" fill={GROUP_COLOR[g]} maxBarSize={28} />
+                        ))
+                      : visibleChartDevices.map((d, i) => (
+                          <Bar key={d} dataKey={d} stackId="a" fill={DEVICE_PALETTE[i % DEVICE_PALETTE.length]} maxBarSize={28} />
+                        ))
+                    }
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="border-t border-slate-100 px-4 pb-4 pt-2">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                  Nurse Interruptions — Refill CANCELLED per day
+                </p>
+                <ResponsiveContainer width="100%" height={100}>
+                  <BarChart data={chartData} margin={{ top: 0, right: 16, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                    <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#94a3b8' }}
+                      tickFormatter={xTickFmt} interval={0} />
+                    <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} width={28} />
+                    <Tooltip formatter={v => [`${v} cancellations`]} />
+                    <Bar dataKey="total_cancel" name="Cancellations" fill="#f59e0b" maxBarSize={28} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* ─── DATA TAB ───────────────────────────────────────────────────── */}
+        {/* ── DATA ENGINE TAB ─────────────────────────────────────────────── */}
         {activeTab === 'data' && (
-          <div className="space-y-5 max-w-4xl">
+          <div className="space-y-5 max-w-5xl">
 
-            {/* Percentile engine */}
+            {/* Sim engine */}
             <div className="bg-white rounded-xl border border-slate-200 p-6">
-              <h2 className="text-lg font-bold mb-1">Simulation Percentile</h2>
-              <p className="text-slate-500 text-sm mb-5">
-                Controls the scheduler. Moving this slider updates all unit time estimates in the Routing tab.
+              <h2 className="text-lg font-bold mb-1">Simulation Engine</h2>
+              <p className="text-slate-500 text-sm mb-4">
+                Values reflect the current date range ({fmtLabel(dateStart)} – {fmtLabel(dateEnd)}).
+                Changing the range or percentile updates the Routing tab instantly.
               </p>
-              <div className="bg-slate-50 p-5 rounded-xl border border-slate-200 mb-5">
-                <div className="flex justify-between font-semibold text-slate-700 mb-2 text-sm">
-                  <span>50th (Median day)</span>
-                  <span className="text-blue-600 text-base">{percentile}th Percentile</span>
-                  <span>100th (Worst day)</span>
-                </div>
-                <input
-                  type="range" min="50" max="100" value={percentile}
+              <div className="flex items-center gap-4 bg-slate-50 border border-slate-200 rounded-xl p-4 mb-5">
+                <span className="text-sm font-semibold text-slate-700">Percentile</span>
+                <input type="range" min="50" max="100" value={percentile}
                   onChange={e => setPercentile(Number(e.target.value))}
-                  className="w-full h-3 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                />
-                <div className="flex justify-between text-xs text-slate-400 mt-2">
-                  <span>Optimistic</span>
-                  <span>Conservative (85)</span>
-                  <span>Total chaos</span>
-                </div>
+                  className="flex-1 accent-blue-600" />
+                <span className="font-extrabold text-blue-700 text-2xl w-16 text-center">{percentile}th</span>
               </div>
 
-              {/* Device stats table */}
               <div className="overflow-x-auto border border-slate-200 rounded-lg">
-                <table className="w-full text-left text-sm text-slate-600">
-                  <thead className="bg-slate-100 text-xs uppercase text-slate-700">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-100 text-xs uppercase text-slate-600">
                     <tr>
-                      <th className="px-4 py-3">Unit</th>
-                      <th className="px-4 py-3">Group</th>
-                      <th className="px-4 py-3 bg-blue-50 border-x border-blue-100">Sim. Time</th>
-                      <th className="px-4 py-3">Median</th>
-                      <th className="px-4 py-3">85th Pct</th>
-                      <th className="px-4 py-3">Max</th>
-                      <th className="px-4 py-3">Source</th>
+                      <th className="px-4 py-2.5">Unit</th>
+                      <th className="px-4 py-2.5">Group</th>
+                      <th className="px-4 py-2.5 bg-blue-50 border-x border-blue-100">Sim Time</th>
+                      <th className="px-4 py-2.5 bg-blue-50 border-x border-blue-100">Sim Vol</th>
+                      <th className="px-4 py-2.5">Med T</th>
+                      <th className="px-4 py-2.5">P85 T</th>
+                      <th className="px-4 py-2.5">Max T</th>
+                      <th className="px-4 py-2.5">Med V</th>
+                      <th className="px-4 py-2.5">P85 V</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {liveDeviceData.map(u => (
-                      <tr key={u.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-2.5 font-bold text-slate-800">{u.id}</td>
-                        <td className="px-4 py-2.5">
-                          <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-                            style={{ background: GROUP_LIGHT[u.group], color: GROUP_TEXT[u.group] }}>
-                            {u.group}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 bg-blue-50/50 border-x border-blue-50 font-bold text-blue-800">
-                          {calculateTime(u, percentile)}m
-                        </td>
-                        <td className="px-4 py-2.5">{u.median}m</td>
-                        <td className="px-4 py-2.5">{u.p85}m</td>
-                        <td className="px-4 py-2.5 text-red-600">{u.max}m</td>
-                        <td className="px-4 py-2.5">
-                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${isUsingLiveData ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                            {isUsingLiveData ? 'Live CSV' : 'Baseline'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {ALL_DEVICE_IDS.map(id => {
+                      const u = deviceStats[id];
+                      if (!u) return null;
+                      return (
+                        <tr key={id} className="hover:bg-slate-50">
+                          <td className="px-4 py-2 font-bold text-slate-800">{id}</td>
+                          <td className="px-4 py-2">
+                            <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                              style={{ background: GROUP_LIGHT[u.group], color: GROUP_TEXT[u.group] }}>
+                              {u.group}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 bg-blue-50/50 border-x border-blue-50 font-bold text-blue-800">{calcSimTime(u, percentile)}m</td>
+                          <td className="px-4 py-2 bg-blue-50/50 border-x border-blue-50 font-bold text-blue-800">{calcSimVol(u)}</td>
+                          <td className="px-4 py-2 text-slate-600">{u.median}m</td>
+                          <td className="px-4 py-2 text-slate-600">{u.p85}m</td>
+                          <td className="px-4 py-2 text-red-600">{u.max}m</td>
+                          <td className="px-4 py-2 text-slate-600">{u.volMedian}</td>
+                          <td className="px-4 py-2 text-slate-600">{u.volP85}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* Loaded segments */}
+            {/* Data sources */}
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               <div className="flex justify-between items-center mb-4">
                 <div>
-                  <h2 className="text-lg font-bold">Loaded Data</h2>
-                  <p className="text-sm text-slate-500 mt-0.5">
-                    {segments.length ? `${segments.length} batch${segments.length > 1 ? 'es' : ''}, ${allRows.length.toLocaleString()} total rows` : 'No data loaded yet.'}
-                  </p>
+                  <h2 className="text-lg font-bold">Data Sources</h2>
+                  <p className="text-sm text-slate-500 mt-0.5">Background data always loaded. User CSV batches append on top.</p>
                 </div>
-                <button
-                  onClick={() => setShowDataModal(true)}
-                  className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-slate-700 transition"
-                >
-                  <IconUpload /> Load / Append
+                <button onClick={() => setShowDataModal(true)}
+                  className="flex items-center gap-2 bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-slate-700 transition">
+                  <IcUpload /> Append CSV
                 </button>
               </div>
 
-              {segments.length === 0 ? (
-                <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-xl">
-                  <p className="text-slate-400 text-sm">No data loaded. Click Load / Append to get started.</p>
+              <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-2">
+                <div>
+                  <span className="font-semibold text-blue-800 text-sm">Background Data (built-in)</span>
+                  <span className="text-xs text-blue-600 ml-3">{fmtLabel(BG_DATE_MIN)} – {fmtLabel(BG_DATE_MAX)}</span>
+                </div>
+                <span className="text-xs bg-blue-200 text-blue-800 px-2 py-0.5 rounded font-medium">Always loaded</span>
+              </div>
+
+              {userSegments.length === 0 ? (
+                <div className="text-center py-8 border-2 border-dashed border-slate-200 rounded-xl mt-2">
+                  <p className="text-slate-400 text-sm">No additional batches.</p>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {segments.map(seg => (
-                    <div key={seg.id} className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+                <div className="space-y-2 mt-2">
+                  {userSegments.map(s => (
+                    <div key={s.id} className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
                       <div>
-                        <span className="font-semibold text-slate-800 text-sm">{seg.name}</span>
-                        <span className="text-xs text-slate-500 ml-3">
-                          {fmtLabel(seg.minDate)} to {fmtLabel(seg.maxDate)}
-                        </span>
+                        <span className="font-semibold text-slate-800 text-sm">{s.name}</span>
+                        <span className="text-xs text-slate-500 ml-3">{fmtLabel(s.minDate)} to {fmtLabel(s.maxDate)}</span>
                       </div>
-                      <div className="flex items-center gap-4">
-                        <span className="text-xs text-slate-500">{seg.rowCount.toLocaleString()} rows</span>
-                        <button
-                          onClick={() => deleteSegment(seg.id)}
-                          className="text-slate-400 hover:text-red-500 transition"
-                          title="Remove this batch"
-                        >
-                          <IconTrash />
-                        </button>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-slate-500">{s.rowCount.toLocaleString()} device-days</span>
+                        <button onClick={() => setUserSegments(p => p.filter(x => x.id !== s.id))}
+                          className="text-slate-400 hover:text-red-500 transition"><IcTrash /></button>
                       </div>
                     </div>
                   ))}
@@ -1054,71 +942,54 @@ export default function App() {
         )}
       </main>
 
-      {/* ─── DATA LOAD MODAL ────────────────────────────────────────────────── */}
+      {/* ── MODALS ─────────────────────────────────────────────────────────── */}
+
+      {/* Load CSV */}
       {showDataModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-xl">
             <div className="flex justify-between items-center p-5 border-b border-slate-100">
-              <h2 className="text-lg font-bold text-slate-800">Load CSV Data</h2>
-              <button onClick={() => { setShowDataModal(false); setLoadError(''); }} className="text-slate-400 hover:text-slate-700 transition">
-                <IconClose />
-              </button>
+              <h2 className="text-lg font-bold">Append CSV Data</h2>
+              <button onClick={() => { setShowDataModal(false); setLoadError(''); }}><IcClose /></button>
             </div>
-
             <div className="p-5 space-y-4">
               <p className="text-sm text-slate-500">
-                New data is <strong>appended</strong> to existing data. Use the Data Engine tab to remove individual batches.
-                Only <strong>Non-CS Med</strong> rows are imported.
+                New batches append to existing data. Duplicate device+date entries use the new values. Only Non-CS Med rows are imported.
               </p>
-
-              <div className="flex gap-0 rounded-lg border border-slate-200 overflow-hidden w-fit mb-1">
-                {['paste', 'file'].map(t => (
-                  <button key={t}
-                    onClick={() => { setActiveLoadTab(t); setLoadError(''); }}
-                    className={`px-4 py-2 text-sm font-semibold transition ${activeLoadTab === t ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                  >
+              <div className="flex rounded-lg border border-slate-200 overflow-hidden w-fit">
+                {['paste','file'].map(t => (
+                  <button key={t} onClick={() => { setActiveLoadTab(t); setLoadError(''); }}
+                    className={`px-4 py-2 text-sm font-semibold transition
+                      ${activeLoadTab === t ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>
                     {t === 'paste' ? 'Paste CSV' : 'Upload File'}
                   </button>
                 ))}
               </div>
-
               {activeLoadTab === 'paste' && (
                 <div>
-                  <textarea
-                    value={pasteText}
-                    onChange={e => setPasteText(e.target.value)}
-                    placeholder="Paste CSV text here..."
-                    className="w-full h-40 border border-slate-200 rounded-lg p-3 text-xs font-mono bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400"
-                  />
-                  <p className="text-xs text-slate-400 mt-1">
-                    Headers required: Device, TransactionDateTime, MedClass, SessionLength, TransactionType
-                  </p>
+                  <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
+                    placeholder="Paste CSV here..."
+                    className="w-full h-40 border border-slate-200 rounded-lg p-3 text-xs font-mono bg-slate-50 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                  <p className="text-xs text-slate-400 mt-1">Columns: Device, TransactionDateTime, MedClass, SessionLength, TransactionType</p>
                 </div>
               )}
-
               {activeLoadTab === 'file' && (
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-slate-200 rounded-xl p-10 text-center cursor-pointer hover:bg-slate-50 transition"
-                >
-                  <div className="text-slate-400 text-sm">Click to select a CSV file</div>
-                  <div className="text-xs text-slate-400 mt-1">Pyxis transaction export (.csv)</div>
+                <div onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-slate-200 rounded-xl p-10 text-center cursor-pointer hover:bg-slate-50 transition">
+                  <div className="text-slate-400 text-sm">Click to select a .csv file</div>
                   <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileLoad} />
                 </div>
               )}
-
               {loadError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2.5 text-sm">
-                  {loadError}
-                </div>
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2.5 text-sm">{loadError}</div>
               )}
-
               {activeLoadTab === 'paste' && (
-                <button
-                  onClick={handlePasteLoad}
+                <button onClick={() => {
+                  if (!pasteText.trim()) { setLoadError('Paste CSV text first.'); return; }
+                  loadCSVText(pasteText, 'Pasted batch');
+                }}
                   disabled={isLoading || !pasteText.trim()}
-                  className="w-full bg-slate-800 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-700 transition disabled:opacity-40"
-                >
+                  className="w-full bg-slate-800 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-700 transition disabled:opacity-40">
                   {isLoading ? 'Parsing...' : 'Import'}
                 </button>
               )}
@@ -1127,55 +998,91 @@ export default function App() {
         </div>
       )}
 
-      {/* ─── EXECUTIVE SUMMARY MODAL ────────────────────────────────────────── */}
+      {/* Session export/import */}
+      {showSession && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+            <div className="flex justify-between items-center p-5 border-b border-slate-100">
+              <h2 className="text-lg font-bold">Session Export / Import</h2>
+              <button onClick={() => setShowSession(false)}><IcClose /></button>
+            </div>
+            <div className="p-5 space-y-6">
+              <div>
+                <h3 className="font-semibold text-slate-800 mb-1">Export Session</h3>
+                <p className="text-sm text-slate-500 mb-3">
+                  Downloads a JSON file containing all boards, settings, date range, chart preferences, and any appended CSV batches.
+                  Load it on any machine to restore your full session.
+                </p>
+                <button onClick={handleExport}
+                  className="flex items-center gap-2 justify-center w-full bg-slate-800 text-white px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-700 transition">
+                  <IcDownload /> Download pyxis-session.json
+                </button>
+              </div>
+              <div className="border-t border-slate-100 pt-5">
+                <h3 className="font-semibold text-slate-800 mb-1">Import Session</h3>
+                <p className="text-sm text-slate-500 mb-3">
+                  Overwrites your current settings and boards with the saved session. Background data is not affected.
+                </p>
+                <button onClick={() => importInputRef.current?.click()}
+                  className="flex items-center gap-2 justify-center w-full bg-slate-100 border border-slate-200 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-200 transition">
+                  <IcUpload /> Load Session JSON
+                </button>
+                <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Executive summary */}
       {showSummary && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-slate-100 p-4 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-slate-800">Executive Summary: Pyxis Workload Analysis</h2>
-              <button onClick={() => setShowSummary(false)} className="text-slate-400 hover:text-slate-800 transition">
-                <IconClose />
-              </button>
+              <h2 className="text-xl font-bold">Executive Summary</h2>
+              <button onClick={() => setShowSummary(false)}><IcClose /></button>
             </div>
-            <div className="p-6 space-y-6 text-slate-600">
+            <div className="p-6 space-y-5 text-slate-600">
+              <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 rounded-xl border border-slate-200 p-4">
+                <div>Range: <strong className="text-slate-800">{fmtLabel(dateStart)} – {fmtLabel(dateEnd)}</strong></div>
+                <div>Percentile: <strong className="text-slate-800">{percentile}th</strong></div>
+                <div>Transactions: <strong className="text-slate-800">{summaryStats.totalVol.toLocaleString()}</strong></div>
+                <div>Interruptions: <strong className="text-amber-700">{summaryStats.totalCancel.toLocaleString()}</strong></div>
+              </div>
               <section>
-                <h3 className="text-base font-bold text-slate-800 mb-2 border-l-4 border-red-500 pl-3">
-                  The South Tower Constraint
-                </h3>
+                <h3 className="font-bold text-slate-800 mb-2 border-l-4 border-red-500 pl-3">South Tower Constraint</h3>
                 <p className="text-sm leading-relaxed">
-                  South Tower units require over 413 minutes of task time on a conservatively busy day at the 85th percentile.
-                  A single technician cannot cover the South Tower within a 10-hour shift with mandatory breaks and cart-reload travel.
+                  South Tower units require over 413 minutes of task time on a {percentile}th percentile day.
+                  A single technician cannot cover the South Tower in a 10-hour shift with mandatory breaks and cart-reload travel.
                 </p>
               </section>
               <section>
-                <h3 className="text-base font-bold text-slate-800 mb-2 border-l-4 border-amber-500 pl-3">
-                  The Cart Reload Penalty
-                </h3>
+                <h3 className="font-bold text-slate-800 mb-2 border-l-4 border-amber-500 pl-3">Cart Reload Penalty</h3>
                 <p className="text-sm leading-relaxed">
-                  Each pharmacy return trip costs ~18 minutes. Increasing cart capacity from 4 to 6 units
-                  reclaims over 1 hour of lost labor per technician per day.
+                  Each pharmacy return trip costs ~{settings.reloadPenalty} minutes. Increasing cart capacity from {settings.cartCapacity} to 6
+                  reclaims over 1 hour of labor per technician per day.
                 </p>
               </section>
               <section>
-                <h3 className="text-base font-bold text-slate-800 mb-2 border-l-4 border-emerald-500 pl-3">
-                  Strategic Options
-                </h3>
-                <ul className="list-disc pl-5 space-y-2 text-sm mt-2">
-                  <li><strong>Option A (Bridge):</strong> Leverages the North-to-SCCT bridge. Balances SCCT workload with North, freeing techs to split the South Tower.</li>
-                  <li><strong>Option B (Silos):</strong> Eliminates cross-tower travel. Tech 1 covers all of North. Tech 2 covers all of SCCT. Techs 3 and 4 split the South Tower evenly.</li>
-                </ul>
+                <h3 className="font-bold text-slate-800 mb-2 border-l-4 border-blue-500 pl-3">Boards</h3>
+                <div className="space-y-2">
+                  {Object.values(boards).map(b => {
+                    const buffers = ['tech1','tech2','tech3','tech4'].map(col =>
+                      calcColMetrics(b.assignments[col] || []).buffer
+                    );
+                    const worst = Math.min(...buffers);
+                    return (
+                      <div key={b.id} className={`flex justify-between items-center text-sm px-3 py-2 rounded border
+                        ${b.id === activeBoardId ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-slate-50'}`}>
+                        <span className="font-semibold">{b.name}{b.id === activeBoardId ? ' (active)' : ''}</span>
+                        <span className={`text-xs font-bold ${worst < 30 ? 'text-red-600' : 'text-emerald-600'}`}>
+                          {worst}m min buffer
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </section>
-              {isUsingLiveData && (
-                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 text-sm text-emerald-800">
-                  <strong>Live data active:</strong> Scheduler times reflect actual daily session totals from {fmtLabel(dateExtent.min)} to {fmtLabel(dateExtent.max)}.
-                  {percentile}th percentile applied.
-                </div>
-              )}
-              {!isUsingLiveData && (
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-600">
-                  <strong>Baseline data active.</strong> Load a CSV to update times with live data.
-                </div>
-              )}
             </div>
           </div>
         </div>
