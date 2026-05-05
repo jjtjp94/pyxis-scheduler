@@ -548,6 +548,7 @@ export default function App() {
               {settings.adjustFactor}% buffer
             </span>
           )}
+          {chartDevices.length > 0 && (
             <span className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
               {chartDevices.slice(0,3).join(', ')}{chartDevices.length > 3 ? ` +${chartDevices.length-3}` : ''}
