@@ -4,7 +4,7 @@ import React, {
 import Papa from 'papaparse';
 import {
   ComposedChart, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import { BACKGROUND_DATA, BG_DATE_MIN, BG_DATE_MAX } from './bgData';
 import {
@@ -860,6 +860,11 @@ export default function App() {
               </div>
 
               <div className="p-4">
+                <p className="text-xs text-slate-400 mb-2">
+                  Bars show raw daily totals.
+                  Purple line = {percentile}th percentile ({activeMetric === 'session' ? `${Math.round(currentViewPct)}m` : Math.round(currentViewPct).toLocaleString()}).
+                  Days above the line exceed your threshold.
+                </p>
                 <ResponsiveContainer width="100%" height={300}>
                   <ComposedChart data={chartData} margin={{ top: 4, right: 16, bottom: 4, left: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
@@ -878,6 +883,20 @@ export default function App() {
                           <Bar key={d} dataKey={d} stackId="a" fill={DEVICE_PALETTE[i % DEVICE_PALETTE.length]} maxBarSize={28} />
                         ))
                     }
+                    <ReferenceLine
+                      y={currentViewPct}
+                      stroke="#7c3aed"
+                      strokeWidth={2}
+                      strokeDasharray="6 3"
+                      label={{
+                        value: `${percentile}th pct`,
+                        position: 'insideTopRight',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        fill: '#7c3aed',
+                        dy: -4,
+                      }}
+                    />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
