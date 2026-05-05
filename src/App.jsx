@@ -358,13 +358,29 @@ export default function App() {
   // ─── SESSION EXPORT / IMPORT ───────────────────────────────────────────────
 
   const handleExport = useCallback(() => {
+    // Build the set of device+date keys that are already in BACKGROUND_DATA.
+    // Any userSegment rows that overlap those keys are redundant — strip them
+    // so importing never re-introduces the same data as a duplicate segment.
+    const bgKeys = new Set(BACKGROUND_DATA.map(r => `${r.d}|${r.k}`));
+
+    const cleanedSegments = userSegments
+      .map(seg => ({
+        ...seg,
+        rows: seg.rows.filter(r => !bgKeys.has(`${r.d}|${r.k}`)),
+      }))
+      .filter(seg => seg.rows.length > 0);   // drop segments that were 100% background data
+
     const blob = new Blob([JSON.stringify({
-      version: 2, exportedAt: new Date().toISOString(),
-      percentile, dateStart, dateEnd, userSegments,
+      version: 3, exportedAt: new Date().toISOString(),
+      percentile, dateStart, dateEnd,
+      userSegments: cleanedSegments,
       boards, activeBoardId, settings, viewMode, activeMetric, chartDevices,
     }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const a = Object.assign(document.createElement('a'), { href: url, download: `pyxis-session-${new Date().toISOString().slice(0,10)}.json` });
+    const a = Object.assign(document.createElement('a'), {
+      href: url,
+      download: `pyxis-session-${new Date().toISOString().slice(0,10)}.json`,
+    });
     a.click();
     URL.revokeObjectURL(url);
   }, [percentile, dateStart, dateEnd, userSegments, boards, activeBoardId, settings, viewMode, activeMetric, chartDevices]);
@@ -377,10 +393,21 @@ export default function App() {
       try {
         const d = JSON.parse(ev.target.result);
         if (!d.version) throw new Error('Not a valid session file.');
+
+        // Safety net: strip any imported segment rows that duplicate BACKGROUND_DATA,
+        // regardless of which version exported them.
+        const bgKeys = new Set(BACKGROUND_DATA.map(r => `${r.d}|${r.k}`));
+        const safeSegments = (d.userSegments || [])
+          .map(seg => ({
+            ...seg,
+            rows: seg.rows.filter(r => !bgKeys.has(`${r.d}|${r.k}`)),
+          }))
+          .filter(seg => seg.rows.length > 0);
+
         if (d.percentile   != null) setPercentile(d.percentile);
         if (d.dateStart)            setDateStart(d.dateStart);
         if (d.dateEnd)              setDateEnd(d.dateEnd);
-        if (d.userSegments)         setUserSegments(d.userSegments);
+        setUserSegments(safeSegments);
         if (d.boards)               setBoards(d.boards);
         if (d.activeBoardId)        setActiveBoardId(d.activeBoardId);
         if (d.settings)             setSettings(d.settings);
