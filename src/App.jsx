@@ -10,6 +10,7 @@ import { BACKGROUND_DATA, BG_DATE_MIN, BG_DATE_MAX } from './bgData';
 import {
   fmtLabel, deriveGroup, pctOf, calcSimTime,
   buildDeviceStats, mergeRows, filterRowsByDate, processCsvToAggRows,
+  computeOutlierBounds,
   GROUP_COLOR, GROUP_LIGHT, GROUP_BORDER, GROUP_TEXT, DEVICE_PALETTE,
   ALL_DEVICE_IDS, DEFAULT_BOARD_ID, DEFAULT_BOARD, DEFAULT_SETTINGS,
 } from './utils';
@@ -127,31 +128,42 @@ export default function App() {
     filterRowsByDate(allRows, dateStart, dateEnd),
   [allRows, dateStart, dateEnd]);
 
-  const deviceStats = useMemo(() => buildDeviceStats(filteredRows, outlierRemoval), [filteredRows, outlierRemoval]);
+  // effectiveRows = filteredRows with outlier device-days removed when toggle is on.
+  // Everything downstream (charts, stats, summary cards, scheduler) reads from this.
+  const effectiveRows = useMemo(() => {
+    if (!outlierRemoval) return filteredRows;
+    const bounds = computeOutlierBounds(filteredRows);
+    return filteredRows.filter(r => {
+      const b = bounds[r.d];
+      return !b || (r.s >= b.lower && r.s <= b.upper);
+    });
+  }, [filteredRows, outlierRemoval]);
 
-  // Total outlier days removed across all devices (for filter bar display)
+  // How many device-days were removed (for the filter bar label)
   const totalOutliersRemoved = useMemo(() =>
-    outlierRemoval ? Object.values(deviceStats).reduce((s, d) => s + (d.daysRemoved || 0), 0) : 0,
-  [deviceStats, outlierRemoval]);
+    filteredRows.length - effectiveRows.length,
+  [filteredRows, effectiveRows]);
+
+  const deviceStats = useMemo(() => buildDeviceStats(effectiveRows, false), [effectiveRows]);
 
   const allDevices = useMemo(() => {
-    const s = new Set(filteredRows.map(r => r.d));
+    const s = new Set(effectiveRows.map(r => r.d));
     return ALL_DEVICE_IDS.filter(id => s.has(id));
-  }, [filteredRows]);
+  }, [effectiveRows]);
 
   const allDates = useMemo(() => {
-    const s = new Set(filteredRows.map(r => r.k));
+    const s = new Set(effectiveRows.map(r => r.k));
     return [...s].sort();
-  }, [filteredRows]);
+  }, [effectiveRows]);
 
   const deviceDayMap = useMemo(() => {
     const map = {};
-    filteredRows.forEach(r => {
+    effectiveRows.forEach(r => {
       if (!map[r.d]) map[r.d] = {};
       map[r.d][r.k] = r;
     });
     return map;
-  }, [filteredRows]);
+  }, [effectiveRows]);
 
   const visibleChartDevices = useMemo(() =>
     chartDevices.length > 0 ? allDevices.filter(d => chartDevices.includes(d)) : allDevices.slice(0, 8),
@@ -173,9 +185,9 @@ export default function App() {
 
   // ── Summary stats ──────────────────────────────────────────────────────────
   const summaryStats = useMemo(() => ({
-    totalVol:    filteredRows.reduce((s, r) => s + r.v, 0),
-    totalCancel: filteredRows.reduce((s, r) => s + r.c, 0),
-  }), [filteredRows]);
+    totalVol:    effectiveRows.reduce((s, r) => s + r.v, 0),
+    totalCancel: effectiveRows.reduce((s, r) => s + r.c, 0),
+  }), [effectiveRows]);
 
   // ── Chart data ─────────────────────────────────────────────────────────────
   const chartData = useMemo(() => {
@@ -538,7 +550,7 @@ export default function App() {
           {outlierRemoval && (
             <span className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
               <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-              Outliers removed ({totalOutliersRemoved} days)
+              Outliers removed ({totalOutliersRemoved} device-days)
               <button onClick={() => setOutlierRemoval(false)} className="ml-1 text-rose-400 hover:text-rose-700">×</button>
             </span>
           )}
@@ -750,7 +762,7 @@ export default function App() {
                     ${outlierRemoval ? 'translate-x-4' : 'translate-x-0'}`} />
                 </button>
                 {outlierRemoval && (
-                  <span className="text-xs text-rose-600 font-medium">{totalOutliersRemoved} days out</span>
+                  <span className="text-xs text-rose-600 font-medium">{totalOutliersRemoved} device-days removed</span>
                 )}
               </label>
               <label className="ml-auto flex items-center gap-3">
@@ -924,7 +936,7 @@ export default function App() {
                       ${outlierRemoval ? 'translate-x-4' : 'translate-x-0'}`} />
                   </button>
                   {outlierRemoval && (
-                    <span className="text-xs text-rose-600 font-semibold">{totalOutliersRemoved} days excluded</span>
+                    <span className="text-xs text-rose-600 font-semibold">{totalOutliersRemoved} device-days removed</span>
                   )}
                 </label>
               </div>
@@ -972,7 +984,9 @@ export default function App() {
                           <td className="px-4 py-2 text-slate-600">{u.volP85}</td>
                           {outlierRemoval && (
                             <td className="px-4 py-2 text-rose-600 font-semibold text-xs">
-                              {u.daysRemoved > 0 ? `-${u.daysRemoved}` : '—'}
+                              {(filteredRows.filter(r => r.d === id).length - effectiveRows.filter(r => r.d === id).length) > 0
+                                ? `-${filteredRows.filter(r => r.d === id).length - effectiveRows.filter(r => r.d === id).length}`
+                                : '—'}
                             </td>
                           )}
                         </tr>

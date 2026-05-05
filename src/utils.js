@@ -58,6 +58,27 @@ export const removeOutliersIQR = (values, multiplier = 1.5) => {
   return { clean, removed: values.length - clean.length };
 };
 
+// Compute per-device IQR bounds from an aggregated row array.
+// Returns { [deviceId]: { lower, upper } } keyed on session (r.s).
+// Use this to filter rows before they reach charts or summary stats.
+export const computeOutlierBounds = (rows, multiplier = 1.5) => {
+  const byDevice = {};
+  rows.forEach(r => {
+    if (!byDevice[r.d]) byDevice[r.d] = [];
+    byDevice[r.d].push(r.s);
+  });
+  const bounds = {};
+  Object.entries(byDevice).forEach(([id, vals]) => {
+    if (vals.length < 4) { bounds[id] = { lower: 0, upper: Infinity }; return; }
+    const sorted = [...vals].sort((a, b) => a - b);
+    const q1  = pctOf(sorted, 25);
+    const q3  = pctOf(sorted, 75);
+    const iqr = q3 - q1;
+    bounds[id] = { lower: Math.max(0, q1 - multiplier * iqr), upper: q3 + multiplier * iqr };
+  });
+  return bounds;
+};
+
 // Interpolate between median, p85, max based on slider value 50–100.
 // adjustFactor is a percentage (100 = no change, 110 = +10% buffer).
 export const calcSimTime = (unit, percentile, adjustFactor = 100) => {
