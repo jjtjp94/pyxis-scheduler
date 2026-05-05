@@ -45,17 +45,34 @@ export const pctOf = (sorted, p) => {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 };
 
-// Interpolate between median, p85, max based on slider value 50–100
-export const calcSimTime = (unit, percentile) => {
+// Remove outliers from a value array using Tukey's IQR fences (1.5x default)
+export const removeOutliersIQR = (values, multiplier = 1.5) => {
+  if (values.length < 4) return { clean: values, removed: 0 };
+  const sorted = [...values].sort((a, b) => a - b);
+  const q1  = pctOf(sorted, 25);
+  const q3  = pctOf(sorted, 75);
+  const iqr = q3 - q1;
+  const upper = q3 + multiplier * iqr;
+  const lower = Math.max(0, q1 - multiplier * iqr);
+  const clean = values.filter(v => v >= lower && v <= upper);
+  return { clean, removed: values.length - clean.length };
+};
+
+// Interpolate between median, p85, max based on slider value 50–100.
+// adjustFactor is a percentage (100 = no change, 110 = +10% buffer).
+export const calcSimTime = (unit, percentile, adjustFactor = 100) => {
   if (!unit) return 0;
-  if (percentile <= 50) return Math.round(unit.median);
-  if (percentile <= 85) return Math.round(unit.median + ((percentile - 50) / 35) * (unit.p85 - unit.median));
-  return Math.round(unit.p85 + ((percentile - 85) / 15) * (unit.max - unit.p85));
+  let base;
+  if (percentile <= 50) base = unit.median;
+  else if (percentile <= 85) base = unit.median + ((percentile - 50) / 35) * (unit.p85 - unit.median);
+  else base = unit.p85 + ((percentile - 85) / 15) * (unit.max - unit.p85);
+  return Math.round(base * (adjustFactor / 100));
 };
 
 // Build per-device stats from aggregated rows.
-// Returns: { [deviceId]: { median, p85, max, volMedian, volP85, volMax } }
-export const buildDeviceStats = (rows) => {
+// outlierRemoval: if true, remove daily session/volume outliers via IQR before computing stats.
+// Returns: { [deviceId]: { median, p85, max, volMedian, volP85, volMax, daysRemoved } }
+export const buildDeviceStats = (rows, outlierRemoval = false) => {
   const byDevice = {};
   rows.forEach(r => {
     if (!byDevice[r.d]) byDevice[r.d] = { session: [], volume: [] };
@@ -64,17 +81,25 @@ export const buildDeviceStats = (rows) => {
   });
   const stats = {};
   Object.entries(byDevice).forEach(([id, { session, volume }]) => {
-    const ss = [...session].sort((a, b) => a - b);
-    const sv = [...volume].sort((a, b) => a - b);
+    const { clean: cleanS, removed: removedS } = outlierRemoval
+      ? removeOutliersIQR(session)
+      : { clean: session, removed: 0 };
+    const { clean: cleanV } = outlierRemoval
+      ? removeOutliersIQR(volume)
+      : { clean: volume, removed: 0 };
+    const ss = [...cleanS].sort((a, b) => a - b);
+    const sv = [...cleanV].sort((a, b) => a - b);
     stats[id] = {
       id,
-      group: deriveGroup(id),
-      median: parseFloat(pctOf(ss, 50).toFixed(1)),
-      p85:    parseFloat(pctOf(ss, 85).toFixed(1)),
-      max:    parseFloat(ss[ss.length - 1].toFixed(1)),
-      volMedian: Math.round(pctOf(sv, 50)),
-      volP85:    Math.round(pctOf(sv, 85)),
-      volMax:    sv[sv.length - 1],
+      group:      deriveGroup(id),
+      median:     parseFloat(pctOf(ss, 50).toFixed(1)),
+      p85:        parseFloat(pctOf(ss, 85).toFixed(1)),
+      max:        parseFloat(ss[ss.length - 1].toFixed(1)),
+      volMedian:  Math.round(pctOf(sv, 50)),
+      volP85:     Math.round(pctOf(sv, 85)),
+      volMax:     sv[sv.length - 1],
+      daysUsed:   ss.length,
+      daysRemoved: removedS,
     };
   });
   return stats;
@@ -175,4 +200,5 @@ export const DEFAULT_SETTINGS = {
   cartCapacity:    4,
   reloadPenalty:  18,
   travelPerUnit:   5,
+  adjustFactor:  100,
 };

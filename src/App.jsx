@@ -95,6 +95,7 @@ export default function App() {
   const [viewMode,      setViewMode]      = useLocalStorage('pyxis_vm',      'group');
   const [activeMetric,  setActiveMetric]  = useLocalStorage('pyxis_am',      'session');
   const [chartDevices,  setChartDevices]  = useLocalStorage('pyxis_cd',      []);
+  const [outlierRemoval,setOutlierRemoval]= useLocalStorage('pyxis_outliers', false);
 
   // Ensure default board exists
   useEffect(() => {
@@ -126,7 +127,12 @@ export default function App() {
     filterRowsByDate(allRows, dateStart, dateEnd),
   [allRows, dateStart, dateEnd]);
 
-  const deviceStats = useMemo(() => buildDeviceStats(filteredRows), [filteredRows]);
+  const deviceStats = useMemo(() => buildDeviceStats(filteredRows, outlierRemoval), [filteredRows, outlierRemoval]);
+
+  // Total outlier days removed across all devices (for filter bar display)
+  const totalOutliersRemoved = useMemo(() =>
+    outlierRemoval ? Object.values(deviceStats).reduce((s, d) => s + (d.daysRemoved || 0), 0) : 0,
+  [deviceStats, outlierRemoval]);
 
   const allDevices = useMemo(() => {
     const s = new Set(filteredRows.map(r => r.d));
@@ -288,7 +294,7 @@ export default function App() {
     let task = 0;
     unitIds.forEach(id => {
       const s = deviceStats[id];
-      if (s) task += calcSimTime(s, percentile);
+      if (s) task += calcSimTime(s, percentile, settings.adjustFactor);
     });
     const n       = unitIds.length;
     const trips   = Math.ceil(n / settings.cartCapacity);
@@ -443,7 +449,7 @@ export default function App() {
           {unitIds.map(id => {
             const stat = deviceStats[id];
             const g    = stat?.group || deriveGroup(id);
-            const simT = stat ? calcSimTime(stat, percentile) : '?';
+            const simT = stat ? calcSimTime(stat, percentile, settings.adjustFactor) : '?';
             const simV = calcSimVol(stat);
             const sel  = selectedTiles.has(id);
             return (
@@ -529,7 +535,19 @@ export default function App() {
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             {activeBoard?.name || '—'}
           </span>
-          {chartDevices.length > 0 && (
+          {outlierRemoval && (
+            <span className="flex items-center gap-1.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+              Outliers removed ({totalOutliersRemoved} days)
+              <button onClick={() => setOutlierRemoval(false)} className="ml-1 text-rose-400 hover:text-rose-700">×</button>
+            </span>
+          )}
+          {settings.adjustFactor !== 100 && (
+            <span className="flex items-center gap-1.5 bg-orange-50 border border-orange-200 text-orange-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
+              {settings.adjustFactor}% buffer
+            </span>
+          )}
             <span className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-full px-2.5 py-1 text-xs font-semibold shrink-0">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
               {chartDevices.slice(0,3).join(', ')}{chartDevices.length > 3 ? ` +${chartDevices.length-3}` : ''}
@@ -605,6 +623,29 @@ export default function App() {
                     className={`${w} p-1 border border-slate-200 rounded text-sm text-center font-semibold bg-slate-50`} />
                 </label>
               ))}
+
+              {/* Adjustment factor */}
+              <label className="flex items-center gap-2 border-l border-slate-200 pl-4">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Adjust %</span>
+                <input type="number" min="100" max="200" step="5"
+                  value={settings.adjustFactor ?? 100}
+                  onChange={e => updateSetting('adjustFactor', e.target.value)}
+                  className="w-16 p-1 border border-slate-200 rounded text-sm text-center font-semibold bg-slate-50" />
+              </label>
+
+              {/* Outlier removal toggle */}
+              <label className="flex items-center gap-2 border-l border-slate-200 pl-4 cursor-pointer select-none">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Remove outliers</span>
+                <button
+                  type="button"
+                  onClick={() => setOutlierRemoval(v => !v)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none
+                    ${outlierRemoval ? 'bg-blue-600' : 'bg-slate-200'}`}
+                >
+                  <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform
+                    ${outlierRemoval ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
+              </label>
               <label className="ml-auto flex items-center gap-3">
                 <span className="text-xs text-slate-500 whitespace-nowrap">Percentile</span>
                 <input type="range" min="50" max="100" value={percentile}
@@ -697,6 +738,20 @@ export default function App() {
               </div>
               <button onClick={() => { setDateStart(BG_DATE_MIN); setDateEnd(BG_DATE_MAX); }}
                 className="text-xs text-blue-600 underline">Reset</button>
+
+              {/* Outlier toggle in analytics */}
+              <label className="flex items-center gap-2 border-l border-slate-200 pl-4 cursor-pointer select-none">
+                <span className="text-xs text-slate-500 whitespace-nowrap">Remove outliers</span>
+                <button type="button" onClick={() => setOutlierRemoval(v => !v)}
+                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none
+                    ${outlierRemoval ? 'bg-blue-600' : 'bg-slate-200'}`}>
+                  <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform
+                    ${outlierRemoval ? 'translate-x-4' : 'translate-x-0'}`} />
+                </button>
+                {outlierRemoval && (
+                  <span className="text-xs text-rose-600 font-medium">{totalOutliersRemoved} days out</span>
+                )}
+              </label>
               <label className="ml-auto flex items-center gap-3">
                 <span className="text-xs text-slate-500 whitespace-nowrap">Percentile</span>
                 <input type="range" min="50" max="100" value={percentile}
@@ -850,6 +905,27 @@ export default function App() {
                   onChange={e => setPercentile(Number(e.target.value))}
                   className="flex-1 accent-blue-600" />
                 <span className="font-extrabold text-blue-700 text-2xl w-16 text-center">{percentile}th</span>
+
+                <div className="border-l border-slate-200 pl-4 flex items-center gap-2">
+                  <span className="text-sm font-semibold text-slate-700 whitespace-nowrap">Adjust %</span>
+                  <input type="number" min="100" max="200" step="5"
+                    value={settings.adjustFactor ?? 100}
+                    onChange={e => updateSetting('adjustFactor', e.target.value)}
+                    className="w-16 p-1.5 border border-slate-200 rounded text-sm text-center font-bold bg-white" />
+                </div>
+
+                <label className="border-l border-slate-200 pl-4 flex items-center gap-2 cursor-pointer select-none">
+                  <span className="text-sm font-semibold text-slate-700 whitespace-nowrap">Remove outliers</span>
+                  <button type="button" onClick={() => setOutlierRemoval(v => !v)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none
+                      ${outlierRemoval ? 'bg-blue-600' : 'bg-slate-200'}`}>
+                    <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform
+                      ${outlierRemoval ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  {outlierRemoval && (
+                    <span className="text-xs text-rose-600 font-semibold">{totalOutliersRemoved} days excluded</span>
+                  )}
+                </label>
               </div>
 
               <div className="overflow-x-auto border border-slate-200 rounded-lg">
@@ -865,6 +941,7 @@ export default function App() {
                       <th className="px-4 py-2.5">Max T</th>
                       <th className="px-4 py-2.5">Med V</th>
                       <th className="px-4 py-2.5">P85 V</th>
+                      {outlierRemoval && <th className="px-4 py-2.5 text-rose-600">Excl.</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -880,13 +957,23 @@ export default function App() {
                               {u.group}
                             </span>
                           </td>
-                          <td className="px-4 py-2 bg-blue-50/50 border-x border-blue-50 font-bold text-blue-800">{calcSimTime(u, percentile)}m</td>
+                          <td className="px-4 py-2 bg-blue-50/50 border-x border-blue-50 font-bold text-blue-800">
+                            {calcSimTime(u, percentile, settings.adjustFactor ?? 100)}m
+                            {(settings.adjustFactor ?? 100) !== 100 && (
+                              <span className="text-xs text-orange-500 ml-1">×{((settings.adjustFactor??100)/100).toFixed(2)}</span>
+                            )}
+                          </td>
                           <td className="px-4 py-2 bg-blue-50/50 border-x border-blue-50 font-bold text-blue-800">{calcSimVol(u)}</td>
                           <td className="px-4 py-2 text-slate-600">{u.median}m</td>
                           <td className="px-4 py-2 text-slate-600">{u.p85}m</td>
                           <td className="px-4 py-2 text-red-600">{u.max}m</td>
                           <td className="px-4 py-2 text-slate-600">{u.volMedian}</td>
                           <td className="px-4 py-2 text-slate-600">{u.volP85}</td>
+                          {outlierRemoval && (
+                            <td className="px-4 py-2 text-rose-600 font-semibold text-xs">
+                              {u.daysRemoved > 0 ? `-${u.daysRemoved}` : '—'}
+                            </td>
+                          )}
                         </tr>
                       );
                     })}
